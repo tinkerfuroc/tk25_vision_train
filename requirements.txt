@@ -1,0 +1,27 @@
+# It is highly recommended to install PyTorch first, following the instructions
+# on the official website (https://pytorch.org/get-started/locally/) to ensure
+# CUDA support is correctly configured for your system.
+# Example command for CUDA 11.8:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+torch
+torchvision
+
+# Core computer vision and data handling
+numpy
+opencv-python
+
+# RealSense camera interface
+pyrealsense2
+
+# Environment variable management
+python-dotenv
+
+# Auto-labeling with GroundingDINO
+autodistill
+autodistill-grounding-dino
+
+# Utilities from Hugging Face and Roboflow
+transformers
+
+# YOLOv11
+ultralytics

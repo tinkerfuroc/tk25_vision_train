@@ -1,0 +1,28 @@
+# gitignore for python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+
+# gitignore for ROS2
+build/
+install/
+log/
+test/
+
+# gitignore for vscode
+.vscode/
+
+# gitignore for pycharm
+.idea/
+
+# gitignore for cursor
+.cursorrules
+.cursor/
+
+# gitignore for YOLO tuning and dataset creation
+*dataset/
+*.pt
+runs/
