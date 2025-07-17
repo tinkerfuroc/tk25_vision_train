@@ -25,3 +25,6 @@ transformers
 
 # YOLOv11
 ultralytics
+
+scikit-learn
+roboflow
