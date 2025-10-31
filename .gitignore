@@ -23,6 +23,6 @@ test/
 .cursor/
 
 # gitignore for YOLO tuning and dataset creation
-*dataset/
+*dataset*/
 *.pt
-runs/
+runs*/
