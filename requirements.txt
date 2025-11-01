@@ -1,30 +1,30 @@
-# It is highly recommended to install PyTorch first, following the instructions
-# on the official website (https://pytorch.org/get-started/locally/) to ensure
-# CUDA support is correctly configured for your system.
-# Example command for CUDA 11.8:
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-torch
-torchvision
-
-# Core computer vision and data handling
-numpy
+# Core ML/CV libraries
+# Note: torch and torchvision versions should be chosen based on your CUDA version.
+# For CUDA 12.1, the following versions are recommended.
+# Find your version with `nvcc --version` and check PyTorch official website for compatibility.
+# torch==2.1.0
+# torchvision==0.16.0
+ultralytics
 opencv-python
+numpy<2.0 # Pinned to avoid ABI issues with older libraries like tensorflow
+supervision
+pandas
+matplotlib
+PyYAML
+transformers
 
-# RealSense camera interface
+# Dataset creation tool dependencies
 pyrealsense2
-
-# Environment variable management
 python-dotenv
-
-# Auto-labeling with GroundingDINO
+thefuzz[speedup]
 autodistill
 autodistill-grounding-dino
 
-# Utilities from Hugging Face and Roboflow
-transformers
+# Models installed directly from GitHub
+# Using -e makes the installation "editable", which is good practice for git-based dependencies
+-e git+https://github.com/luca-medeiros/lang-segment-anything.git#egg=lang-sam
+-e git+https://github.com/facebookresearch/segment-anything.git#egg=segment_anything
 
-# YOLOv11
-ultralytics
-
-scikit-learn
-roboflow
+# Other dependencies that were discovered to be necessary during setup
+flatbuffers
+hydra-core
