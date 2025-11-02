@@ -258,35 +258,211 @@ class RealSenseDatasetCreator:
                             f"#{idx} {self.class_names[cid]} {conf:.2f}"
                             for idx, (cid, conf) in enumerate(zip(predictions_for_display.class_id, predictions_for_display.confidence))
                         ]
-                        annotated_image = mask_annotator.annotate(scene=display_image, detections=predictions_for_display)
-                        annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
                         
-                        # Highlight selected detection on the padded image
+                        # If there's a selected detection, render it separately on top
                         if kept_indices and selected_idx < len(predictions_for_display):
-                            highlight_mask = np.zeros_like(annotated_image)
+                            # First, render all non-selected detections
+                            other_indices = [i for i in range(len(predictions_for_display)) if i != selected_idx]
+                            if other_indices:
+                                other_predictions = predictions_for_display[other_indices]
+                                other_labels = [labels[i] for i in other_indices]
+                                annotated_image = mask_annotator.annotate(scene=display_image, detections=other_predictions)
+                                annotated_image = label_annotator.annotate(scene=annotated_image, detections=other_predictions, labels=other_labels)
+                            else:
+                                annotated_image = display_image.copy()
+                            
+                            # Get the selected mask
                             selected_mask = predictions_for_display.mask[selected_idx]
+                            
+                            # Create an expanded mask to clear labels near the selection
+                            kernel = np.ones((5, 5), np.uint8)
+                            expanded_mask = cv2.dilate(selected_mask.astype(np.uint8), kernel, iterations=3).astype(bool)
+                            
+                            # Reset the area of the selection to the base image (clears overlapping labels)
+                            annotated_image[expanded_mask] = display_image[expanded_mask]
+                            
+                            # Now render the selected detection on top with highlight
+                            selected_detection = predictions_for_display[selected_idx]
+                            selected_label_text = [labels[selected_idx]]
+                            
+                            # Create highlight layer
+                            highlight_mask = np.zeros_like(annotated_image)
                             highlight_mask[selected_mask] = [0, 0, 255] # Red highlight
                             annotated_image = cv2.addWeighted(annotated_image, 0.7, highlight_mask, 0.3, 0)
+                            
+                            # Render the selected detection mask and label on top
+                            annotated_image = mask_annotator.annotate(scene=annotated_image, detections=selected_detection)
+                            annotated_image = label_annotator.annotate(scene=annotated_image, detections=selected_detection, labels=selected_label_text)
+                            
+                            # Extract and display the selected segment in the top padding area
+                            selected_class_id = predictions_for_display.class_id[selected_idx]
+                            selected_conf = predictions_for_display.confidence[selected_idx]
+                            top_label = f"Selected: #{selected_idx} {self.class_names[selected_class_id]} {selected_conf:.2f}"
+                            
+                            # Create a cropped view of the selected segment
+                            x1, y1, x2, y2 = predictions_for_display.xyxy[selected_idx].astype(int)
+                            crop_h, crop_w = y2 - y1, x2 - x1
+                            
+                            if crop_h > 0 and crop_w > 0:
+                                # Extract the cropped region
+                                cropped_region = annotated_image[y1:y2, x1:x2].copy()
+                                
+                                # Calculate size for the thumbnail (fit in top padding)
+                                max_thumb_h = top - 10
+                                scale = min(max_thumb_h / crop_h, 150 / crop_w, 1.0)
+                                thumb_w = int(crop_w * scale)
+                                thumb_h = int(crop_h * scale)
+                                
+                                if thumb_h > 0 and thumb_w > 0:
+                                    thumbnail = cv2.resize(cropped_region, (thumb_w, thumb_h))
+                                    
+                                    # Place thumbnail in top-right corner of padding
+                                    thumb_x = annotated_image.shape[1] - thumb_w - 10
+                                    thumb_y = 5
+                                    annotated_image[thumb_y:thumb_y+thumb_h, thumb_x:thumb_x+thumb_w] = thumbnail
+                                    
+                                    # Draw border around thumbnail
+                                    cv2.rectangle(annotated_image, (thumb_x, thumb_y), (thumb_x+thumb_w, thumb_y+thumb_h), (0, 0, 255), 2)
+                            
+                            # Display the label in the top-left of the padding
+                            cv2.putText(annotated_image, top_label, (left + 10, 30), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        else:
+                            # No selection, render all normally
+                            annotated_image = mask_annotator.annotate(scene=display_image, detections=predictions_for_display)
+                            annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
                     else:
                         annotated_image = display_image
 
                     if manual_mode:
-                        # Draw points for manual segmentation, offsetting for padding
+                        # In manual mode, render detections but ensure preview is on top
+                        annotated_image = display_image.copy()
+                        
+                        # Draw the temporary preview mask if it exists
+                        if self.temp_manual_mask is not None:
+                            padded_temp_mask = np.zeros((live_image.shape[0] + top + bottom, live_image.shape[1] + left + right), dtype=bool)
+                            padded_temp_mask[top:top+live_image.shape[0], left:left+live_image.shape[1]] = self.temp_manual_mask
+                            
+                            # Render existing detections first, but their masks/labels will be blocked by preview
+                            if len(current_predictions) > 0:
+                                predictions_for_display = copy.deepcopy(current_predictions)
+                                predictions_for_display.xyxy += np.array([left, top, left, top])
+                                
+                                padded_masks = []
+                                for mask in predictions_for_display.mask:
+                                    padded_mask = np.zeros((live_image.shape[0] + top + bottom, live_image.shape[1] + left + right), dtype=bool)
+                                    padded_mask[top:top+live_image.shape[0], left:left+live_image.shape[1]] = mask
+                                    padded_masks.append(padded_mask)
+                                predictions_for_display.mask = np.array(padded_masks)
+                                
+                                labels = [
+                                    f"#{idx} {self.class_names[cid]} {conf:.2f}"
+                                    for idx, (cid, conf) in enumerate(zip(predictions_for_display.class_id, predictions_for_display.confidence))
+                                ]
+                                annotated_image = mask_annotator.annotate(scene=annotated_image, detections=predictions_for_display)
+                                annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
+                            
+                            # Now draw the preview mask on top, clearing any overlapping content
+                            # Create an expanded mask to also clear labels near the preview
+                            kernel = np.ones((5, 5), np.uint8)
+                            expanded_mask = cv2.dilate(padded_temp_mask.astype(np.uint8), kernel, iterations=3).astype(bool)
+                            
+                            # Reset the area of the preview to the base image
+                            annotated_image[expanded_mask] = display_image[expanded_mask]
+                            
+                            # Create a mask overlay
+                            temp_mask_display = np.zeros_like(annotated_image)
+                            temp_mask_display[padded_temp_mask] = [255, 0, 0] # Blue preview
+                            
+                            # Overlay the preview mask
+                            annotated_image = cv2.addWeighted(annotated_image, 0.7, temp_mask_display, 0.3, 0)
+                            
+                            # Create a single detection for the preview mask to get proper label rendering
+                            preview_detection = sv.Detections(
+                                xyxy=sv.mask_to_xyxy(masks=np.array([padded_temp_mask])),
+                                mask=np.array([padded_temp_mask]),
+                                class_id=np.array([self.current_class_idx]),
+                                confidence=np.array([1.0])
+                            )
+                            preview_label = [f"Preview: {self.class_names[self.current_class_idx]}"]
+                            
+                            # Render the preview label on top of everything
+                            annotated_image = label_annotator.annotate(scene=annotated_image, detections=preview_detection, labels=preview_label)
+                        else:
+                            # No preview, just render existing detections normally
+                            if len(current_predictions) > 0:
+                                predictions_for_display = copy.deepcopy(current_predictions)
+                                predictions_for_display.xyxy += np.array([left, top, left, top])
+                                
+                                padded_masks = []
+                                for mask in predictions_for_display.mask:
+                                    padded_mask = np.zeros((live_image.shape[0] + top + bottom, live_image.shape[1] + left + right), dtype=bool)
+                                    padded_mask[top:top+live_image.shape[0], left:left+live_image.shape[1]] = mask
+                                    padded_masks.append(padded_mask)
+                                predictions_for_display.mask = np.array(padded_masks)
+                                
+                                labels = [
+                                    f"#{idx} {self.class_names[cid]} {conf:.2f}"
+                                    for idx, (cid, conf) in enumerate(zip(predictions_for_display.class_id, predictions_for_display.confidence))
+                                ]
+                                annotated_image = mask_annotator.annotate(scene=display_image, detections=predictions_for_display)
+                                annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
+                        
+                        # Draw points for manual segmentation, offsetting for padding (always on top)
                         for point in self.mouse_points:
                             padded_point = (point[0] + left, point[1] + top)
                             cv2.circle(annotated_image, padded_point, 5, (0, 255, 0), -1)
                         
-                        # Draw the temporary preview mask if it exists, offsetting for padding
+                        # Display thumbnail and label for preview or show current class
                         if self.temp_manual_mask is not None:
-                            temp_mask_display = np.zeros_like(annotated_image)
-                            padded_temp_mask = np.zeros((live_image.shape[0] + top + bottom, live_image.shape[1] + left + right), dtype=bool)
-                            padded_temp_mask[top:top+live_image.shape[0], left:left+live_image.shape[1]] = self.temp_manual_mask
-                            temp_mask_display[padded_temp_mask] = [255, 0, 0] # Blue preview
-                            annotated_image = cv2.addWeighted(annotated_image, 0.7, temp_mask_display, 0.3, 0)
-
-                        # Display current class for manual annotation
-                        class_text = f"Current class: {self.class_names[self.current_class_idx]}"
-                        cv2.putText(annotated_image, class_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                            # Extract and display the preview segment in the top padding area
+                            preview_label_text = f"Preview: {self.class_names[self.current_class_idx]}"
+                            
+                            # Recreate padded_temp_mask for thumbnail extraction
+                            padded_temp_mask_for_thumb = np.zeros((live_image.shape[0] + top + bottom, live_image.shape[1] + left + right), dtype=bool)
+                            padded_temp_mask_for_thumb[top:top+live_image.shape[0], left:left+live_image.shape[1]] = self.temp_manual_mask
+                            
+                            # Find bounding box of the preview mask
+                            mask_coords = np.argwhere(padded_temp_mask_for_thumb)
+                            if len(mask_coords) > 0:
+                                y1, x1 = mask_coords.min(axis=0)
+                                y2, x2 = mask_coords.max(axis=0)
+                                crop_h, crop_w = y2 - y1, x2 - x1
+                                
+                                if crop_h > 0 and crop_w > 0:
+                                    # Extract the cropped region
+                                    cropped_region = annotated_image[y1:y2, x1:x2].copy()
+                                    
+                                    # Calculate size for the thumbnail
+                                    max_thumb_h = top - 10
+                                    scale = min(max_thumb_h / crop_h, 150 / crop_w, 1.0)
+                                    thumb_w = int(crop_w * scale)
+                                    thumb_h = int(crop_h * scale)
+                                    
+                                    if thumb_h > 0 and thumb_w > 0:
+                                        thumbnail = cv2.resize(cropped_region, (thumb_w, thumb_h))
+                                        
+                                        # Place thumbnail in top-right corner
+                                        thumb_x = annotated_image.shape[1] - thumb_w - 10
+                                        thumb_y = 5
+                                        annotated_image[thumb_y:thumb_y+thumb_h, thumb_x:thumb_x+thumb_w] = thumbnail
+                                        
+                                        # Draw border around thumbnail (blue for preview)
+                                        cv2.rectangle(annotated_image, (thumb_x, thumb_y), (thumb_x+thumb_w, thumb_y+thumb_h), (255, 0, 0), 2)
+                                
+                                # Display the preview label in the top-left
+                                cv2.putText(annotated_image, preview_label_text, (left + 10, 30), 
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                        else:
+                            # Display current class for manual annotation when no preview
+                            class_text = f"Current class: {self.class_names[self.current_class_idx]}"
+                            cv2.putText(annotated_image, class_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    else:
+                        # When not in manual mode, show current class info if available
+                        if len(current_predictions) == 0:
+                            # Display current class for manual annotation
+                            class_text = f"Manual class: {self.class_names[self.current_class_idx]}"
+                            cv2.putText(annotated_image, class_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 128), 2)
 
                     cv2.imshow("Image", annotated_image)
                     key = cv2.waitKeyEx(100)
