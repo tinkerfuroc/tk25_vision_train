@@ -99,8 +99,15 @@ class RealSenseDatasetCreator:
 
     def mouse_callback(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
-            self.mouse_points.append((x, y))
-            print(f"Added point: ({x}, {y})")
+            # Adjust mouse coordinates to be relative to the original image, not the padded display
+            top, left = 50, 50 # Must match padding defined in run()
+            
+            # Only register clicks within the actual image area
+            if x >= left and y >= top:
+                adjusted_x = x - left
+                adjusted_y = y - top
+                self.mouse_points.append((adjusted_x, adjusted_y))
+                print(f"Added point: ({adjusted_x}, {adjusted_y})")
 
     def run(self):
         """Main loop to capture, label, and save images."""
@@ -119,6 +126,10 @@ class RealSenseDatasetCreator:
         cv2.namedWindow("Image")
         cv2.setMouseCallback("Image", self.mouse_callback)
 
+        # Define padding for the display
+        top, bottom, left, right = 50, 100, 50, 50
+        border_color = [50, 50, 50] # Dark gray
+
         try:
             while True: # Main loop for live feed and capturing
                 # --- Live Feed ---
@@ -128,7 +139,10 @@ class RealSenseDatasetCreator:
                     continue
 
                 live_image = np.asanyarray(color_frame.get_data())
-                display_image = live_image.copy()
+                
+                # Add padding for display
+                display_image = cv2.copyMakeBorder(live_image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=border_color)
+
                 cv2.putText(display_image, "Press SPACE to capture, 'q' to quit", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 cv2.imshow("Image", display_image)
 
@@ -220,36 +234,54 @@ class RealSenseDatasetCreator:
 
 
                 while True: 
-                    display_image = cv_image.copy()
+                    # Add padding to the base image for this frame's display
+                    display_image = cv2.copyMakeBorder(cv_image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=border_color)
                     
                     current_predictions = predictions[kept_indices] if kept_indices else sv.Detections.empty()
 
                     if len(current_predictions) > 0:
+                        # Create a deep copy to avoid modifying original predictions
+                        predictions_for_display = copy.deepcopy(current_predictions)
+                        
+                        # Offset detections to match the padded image coordinates
+                        predictions_for_display.xyxy += np.array([left, top, left, top])
+                        
+                        # Pad the masks
+                        padded_masks = []
+                        for mask in predictions_for_display.mask:
+                            padded_mask = np.zeros((live_image.shape[0] + top + bottom, live_image.shape[1] + left + right), dtype=bool)
+                            padded_mask[top:top+live_image.shape[0], left:left+live_image.shape[1]] = mask
+                            padded_masks.append(padded_mask)
+                        predictions_for_display.mask = np.array(padded_masks)
+
                         labels = [
                             f"#{idx} {self.class_names[cid]} {conf:.2f}"
-                            for idx, (cid, conf) in enumerate(zip(current_predictions.class_id, current_predictions.confidence))
+                            for idx, (cid, conf) in enumerate(zip(predictions_for_display.class_id, predictions_for_display.confidence))
                         ]
-                        annotated_image = mask_annotator.annotate(scene=display_image, detections=current_predictions)
-                        annotated_image = label_annotator.annotate(scene=annotated_image, detections=current_predictions, labels=labels)
+                        annotated_image = mask_annotator.annotate(scene=display_image, detections=predictions_for_display)
+                        annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
                         
-                        # Highlight selected detection
-                        if kept_indices and selected_idx < len(current_predictions):
+                        # Highlight selected detection on the padded image
+                        if kept_indices and selected_idx < len(predictions_for_display):
                             highlight_mask = np.zeros_like(annotated_image)
-                            selected_mask = current_predictions.mask[selected_idx]
+                            selected_mask = predictions_for_display.mask[selected_idx]
                             highlight_mask[selected_mask] = [0, 0, 255] # Red highlight
                             annotated_image = cv2.addWeighted(annotated_image, 0.7, highlight_mask, 0.3, 0)
                     else:
                         annotated_image = display_image
 
                     if manual_mode:
-                        # Draw points for manual segmentation
+                        # Draw points for manual segmentation, offsetting for padding
                         for point in self.mouse_points:
-                            cv2.circle(annotated_image, point, 5, (0, 255, 0), -1)
+                            padded_point = (point[0] + left, point[1] + top)
+                            cv2.circle(annotated_image, padded_point, 5, (0, 255, 0), -1)
                         
-                        # Draw the temporary preview mask if it exists
+                        # Draw the temporary preview mask if it exists, offsetting for padding
                         if self.temp_manual_mask is not None:
                             temp_mask_display = np.zeros_like(annotated_image)
-                            temp_mask_display[self.temp_manual_mask] = [255, 0, 0] # Blue preview
+                            padded_temp_mask = np.zeros((live_image.shape[0] + top + bottom, live_image.shape[1] + left + right), dtype=bool)
+                            padded_temp_mask[top:top+live_image.shape[0], left:left+live_image.shape[1]] = self.temp_manual_mask
+                            temp_mask_display[padded_temp_mask] = [255, 0, 0] # Blue preview
                             annotated_image = cv2.addWeighted(annotated_image, 0.7, temp_mask_display, 0.3, 0)
 
                         # Display current class for manual annotation
