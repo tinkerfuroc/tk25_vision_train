@@ -1,11 +1,6 @@
 # Core ML/CV libraries
-# Note: torch and torchvision versions should be chosen based on your CUDA version.
-# For CUDA 12.1, the following versions are recommended.
-# Find your version with `nvcc --version` and check PyTorch official website for compatibility.
-# torch==2.1.0
-# torchvision==0.16.0
 ultralytics
-opencv-python
+opencv-python<=4.12.0
 numpy<2.0 # Pinned to avoid ABI issues with older libraries like tensorflow
 supervision
 pandas

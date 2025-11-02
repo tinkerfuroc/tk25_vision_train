@@ -4,6 +4,10 @@
 ## Requirements
 Python 3.10，安装requriements.txt中内容。
 
+Download 'sam_vit_b_01ec64.pth' to '.'.
+
+If you use the conda yml file, make sure to install LangSAM and SAM2 manually from github.
+
 ## 构造数据集
 目前至支持使用Realsense相机实时采样。
 
@@ -18,12 +22,16 @@ Python 3.10，安装requriements.txt中内容。
 
 3. 进入`yolo_tuning`文件夹
 
-4. 使用`python -m create_dataset`开始构造数据集
+4.1 Train YOLO 使用`python -m create_dataset`开始构造数据集
 
-5. 对于出现的每张照片，使用`上下箭头`选中不同的bounding box，并按`d`删除不正确的框。没问题后按`s`保存。如果一张图片全部错误或者没有识别出来，按`空格`跳过。
+4.2 Train YOLO-seg 使用`python -m create_dataset_seg`开始构造数据集
+
+5.1 对于出现的每张照片，使用`上下箭头`选中不同的bounding box，并按`d`删除不正确的框。没问题后按`s`保存。如果一张图片全部错误或者没有识别出来，按`空格`跳过。
     * 若每次的错误或漏识别都非常多，更改GroundingDINO的prompt
     * 保存前确保没有错标的bounding box，不要污染数据源！！！
     * 每种物品尽量在数据集中出现一百次以上。
+
+5.2 Press 'Space' to capture current image. Use 'Up' and 'Down' arrow keys to select different segments and 'd' to delete the selected segment. Press 'm' to enter manual mode: click on a point(s) then press 'Enter' to generate segment, if satisfied, use 'Up' and 'Down' arrow keys to select the correct label, then press 'a' to add the segment. When you are finished, press 'm' again to exit manual mode. Press 's' to save image and 'esc' to discard image.
 
 6. 标定完后按`q`结束。
 
