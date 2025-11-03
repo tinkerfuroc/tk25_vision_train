@@ -120,8 +120,9 @@ def run_finetuning():
         with open(ontology_path, 'r') as f:
             ontology = json.load(f)
         
-        # Use ontology keys for class names to match create_dataset_seg.py
-        class_names = list(ontology.keys())
+        # Use ontology values (actual class names) for training
+        # Keys are prompts for detection, values are class names
+        class_names = list(ontology.values())
         num_classes = len(class_names)
 
         data_yaml = {

@@ -41,7 +41,11 @@ class RealSenseDatasetCreator:
 
         # Initialize the base model for labeling
         self.ontology = self._load_ontology()
-        self.class_names = list(self.ontology.keys()) if self.ontology else []
+        # Keys are prompts for LangSAM, values are class names for display/training
+        self.prompts = list(self.ontology.keys()) if self.ontology else []
+        self.class_names = list(self.ontology.values()) if self.ontology else []
+        # Create mapping from prompt to class name
+        self.prompt_to_class = self.ontology if self.ontology else {}
         
         print("Loading LangSAM model...")
         self.base_model = LangSAM()
@@ -183,8 +187,8 @@ class RealSenseDatasetCreator:
         rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_image)
         
-        text_prompts = list(self.ontology.keys())
-        text_prompt = '. '.join(text_prompts)
+        # Use prompts (keys) for LangSAM detection
+        text_prompt = '. '.join(self.prompts)
         print("Using text prompt:", text_prompt)
         
         # Call predict once with all prompts
@@ -202,12 +206,14 @@ class RealSenseDatasetCreator:
             if len(masks) > 0 and len(phrases) > 0:
                 valid_detections = []
                 for i, phrase in enumerate(phrases):
-                    # Use fuzzy matching to find the best class name
-                    match, score = process.extractOne(phrase, self.class_names)
+                    # Use fuzzy matching to find the best prompt match
+                    match, score = process.extractOne(phrase, self.prompts)
                     
                     # Only accept matches with a certain confidence
                     if score >= 80:
-                        class_id = self.class_names.index(match)
+                        # Get the class name (value) from the matched prompt (key)
+                        class_name = self.prompt_to_class[match]
+                        class_id = self.class_names.index(class_name)
                         
                         boolean_mask = masks[i] > 0.5
                         # Create a temporary Detections object for this one detection
