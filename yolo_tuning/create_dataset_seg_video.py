@@ -92,7 +92,7 @@ class RealSenseVideoDatasetCreator:
         # Video recording state
         self.is_recording = False
         self.recorded_frames = []
-        self.max_frames = 10  # Maximum frames to record (10 seconds at 30fps)
+        self.max_frames = 50  # Maximum frames to record (10 seconds at 30fps)
 
     def _load_ontology(self):
         """Loads the ontology from a JSON file."""
@@ -598,10 +598,77 @@ class RealSenseVideoDatasetCreator:
                             selected_idx = len(kept_indices) - 1
                         print("Deleted detection.")
 
+    def _interactive_tracking_pause(self, frame_annotations, current_idx, mask_annotator, label_annotator, padding):
+        """Interactive pause mode during tracking - allows navigation and editing."""
+        print(f"\n--- Paused at Frame {current_idx + 1} ---")
+        print("Pause Controls:")
+        print(" 'left'/'right': Navigate to previous/next frames")
+        print(" 'm': Edit current frame")
+        print(" 'c': Continue tracking from current frame")
+        print(" 'esc': Cancel and return to tracking from original pause point")
+        
+        top, bottom, left, right = padding
+        pause_idx = current_idx
+        
+        while True:
+            # Get current frame and annotations
+            current_frame = self.recorded_frames[pause_idx]
+            current_predictions = frame_annotations[pause_idx]
+            
+            # Render frame
+            display_image = cv2.copyMakeBorder(current_frame, top, bottom, left, right, 
+                                              cv2.BORDER_CONSTANT, value=[50, 50, 50])
+            
+            if len(current_predictions) > 0:
+                predictions_for_display = self._prepare_predictions_for_display(
+                    current_predictions, left, top, current_frame.shape, padding
+                )
+                labels = self._create_labels(predictions_for_display)
+                
+                annotated_image = mask_annotator.annotate(scene=display_image, detections=predictions_for_display)
+                annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
+            else:
+                annotated_image = display_image.copy()
+            
+            # Add status text
+            cv2.putText(annotated_image, f"PAUSED - Frame {pause_idx + 1}/{len(frame_annotations)} (Navigate: left/right, Edit: m, Continue: c)", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
+            
+            cv2.imshow("Video Annotation", annotated_image)
+            
+            # Get user input
+            pause_key = cv2.waitKeyEx(100)
+            
+            if pause_key == ord('c'):  # Continue tracking from current frame
+                print(f"Continuing tracking from frame {pause_idx + 1}...")
+                return pause_idx  # Return the frame index to continue from
+            elif pause_key == 27:  # Esc - cancel, go back to original pause point
+                print("Cancelled. Returning to original pause point...")
+                return current_idx  # Return original index
+            elif pause_key == 65363:  # Right arrow
+                if pause_idx < len(frame_annotations) - 1:
+                    pause_idx += 1
+            elif pause_key == 65361:  # Left arrow
+                if pause_idx > 0:
+                    pause_idx -= 1
+            elif pause_key == ord('m'):  # Edit current frame
+                print(f"\nEditing frame {pause_idx + 1}...")
+                edited_predictions = self._edit_single_frame(
+                    current_frame, current_predictions,
+                    mask_annotator, label_annotator, padding
+                )
+                
+                if edited_predictions is not None:
+                    frame_annotations[pause_idx] = edited_predictions
+                    print(f"Frame {pause_idx + 1} updated.")
+                else:
+                    print("Edit cancelled.")
+
     def _track_video(self, initial_predictions, mask_annotator, label_annotator, padding):
-        """Track the annotations through the rest of the video frames."""
+        """Track the annotations through the rest of the video frames with interactive pause."""
         print("\n=== Tracking Through Video ===")
         print(f"Total frames recorded: {len(self.recorded_frames)}")
+        print("Press 'p' to pause (navigate/edit), 'esc' to cancel tracking")
         
         # Store annotations for each frame
         frame_annotations = [initial_predictions]  # First frame
@@ -609,7 +676,8 @@ class RealSenseVideoDatasetCreator:
         top, bottom, left, right = padding
         
         # Track through remaining frames
-        for i in range(1, len(self.recorded_frames)):
+        i = 1
+        while i < len(self.recorded_frames):
             current_frame = self.recorded_frames[i]
             rgb_image = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
             
@@ -628,29 +696,47 @@ class RealSenseVideoDatasetCreator:
                 print(f"Warning: Tracking failed at frame {i}. Using previous frame's predictions.")
                 tracked_predictions = prev_predictions
             
-            frame_annotations.append(tracked_predictions)
+            # Append or update the frame annotation
+            if i < len(frame_annotations):
+                frame_annotations[i] = tracked_predictions
+            else:
+                frame_annotations.append(tracked_predictions)
             
-            # Display progress
+            # Show preview with tracking status
+            display_image = cv2.copyMakeBorder(current_frame, top, bottom, left, right, 
+                                              cv2.BORDER_CONSTANT, value=[50, 50, 50])
+            
+            predictions_for_display = self._prepare_predictions_for_display(
+                tracked_predictions, left, top, current_frame.shape, padding
+            )
+            labels = self._create_labels(predictions_for_display)
+            
+            annotated_image = mask_annotator.annotate(scene=display_image, detections=predictions_for_display)
+            annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
+            
+            cv2.putText(annotated_image, f"Tracking: Frame {i + 1}/{len(self.recorded_frames)} - Press 'p' to pause", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
+            cv2.imshow("Video Annotation", annotated_image)
+            
+            # Check for user input
+            key = cv2.waitKeyEx(1)
+            
+            if key == ord('p'):  # Pause - enter interactive navigation mode
+                new_start_idx = self._interactive_tracking_pause(
+                    frame_annotations, i, mask_annotator, label_annotator, padding
+                )
+                # Continue tracking from the returned frame index
+                i = new_start_idx
+            elif key == 27:  # Esc - cancel tracking
+                print("\nTracking cancelled by user.")
+                return None
+            
+            # Progress logging
             if (i + 1) % 10 == 0:
                 print(f"Tracked {i + 1}/{len(self.recorded_frames)} frames...")
-                
-                # Show preview
-                display_image = cv2.copyMakeBorder(current_frame, top, bottom, left, right, 
-                                                  cv2.BORDER_CONSTANT, value=[50, 50, 50])
-                
-                predictions_for_display = self._prepare_predictions_for_display(
-                    tracked_predictions, left, top, current_frame.shape, padding
-                )
-                labels = self._create_labels(predictions_for_display)
-                
-                annotated_image = mask_annotator.annotate(scene=display_image, detections=predictions_for_display)
-                annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
-                
-                cv2.putText(annotated_image, f"Tracking: Frame {i + 1}/{len(self.recorded_frames)}", 
-                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                
-                cv2.imshow("Video Annotation", annotated_image)
-                cv2.waitKey(1)
+            
+            i += 1
         
         print("Tracking complete!")
         return frame_annotations
@@ -735,8 +821,11 @@ class RealSenseVideoDatasetCreator:
                 playing = False
                 if len(current_predictions) > 0:
                     print(f"\n--- Re-running tracking from frame {current_frame_idx + 1} ---")
-                    # Track from current frame to the end
-                    for i in range(current_frame_idx + 1, len(self.recorded_frames)):
+                    print("Press 'p' to pause (navigate/edit), 'esc' to cancel re-tracking")
+                    
+                    # Track from current frame to the end (interactive)
+                    i = current_frame_idx + 1
+                    while i < len(self.recorded_frames):
                         frame = self.recorded_frames[i]
                         rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         
@@ -757,9 +846,41 @@ class RealSenseVideoDatasetCreator:
                         
                         frame_annotations[i] = tracked_predictions
                         
+                        # Show preview with tracking status
+                        display_image = cv2.copyMakeBorder(frame, top, bottom, left, right, 
+                                                          cv2.BORDER_CONSTANT, value=[50, 50, 50])
+                        
+                        predictions_for_display = self._prepare_predictions_for_display(
+                            tracked_predictions, left, top, frame.shape, padding
+                        )
+                        labels = self._create_labels(predictions_for_display)
+                        
+                        annotated_image = mask_annotator.annotate(scene=display_image, detections=predictions_for_display)
+                        annotated_image = label_annotator.annotate(scene=annotated_image, detections=predictions_for_display, labels=labels)
+                        
+                        cv2.putText(annotated_image, f"Re-tracking: Frame {i + 1}/{len(self.recorded_frames)} - Press 'p' to pause", 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        
+                        cv2.imshow("Video Annotation", annotated_image)
+                        
+                        # Check for user input
+                        retrack_key = cv2.waitKeyEx(1)
+                        
+                        if retrack_key == ord('p'):  # Pause - enter interactive navigation mode
+                            new_start_idx = self._interactive_tracking_pause(
+                                frame_annotations, i, mask_annotator, label_annotator, padding
+                            )
+                            # Continue tracking from the returned frame index
+                            i = new_start_idx
+                        elif retrack_key == 27:  # Esc - cancel re-tracking
+                            print("\nRe-tracking cancelled by user.")
+                            break
+                        
                         # Display progress
                         if (i + 1) % 5 == 0 or i == len(self.recorded_frames) - 1:
                             print(f"Re-tracked {i - current_frame_idx}/{len(self.recorded_frames) - current_frame_idx - 1} frames...")
+                        
+                        i += 1
                     
                     print("Re-tracking complete!")
                 else:
