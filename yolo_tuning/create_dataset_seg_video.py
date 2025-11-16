@@ -92,7 +92,7 @@ class RealSenseVideoDatasetCreator:
         # Video recording state
         self.is_recording = False
         self.recorded_frames = []
-        self.max_frames = 50  # Maximum frames to record (10 seconds at 30fps)
+        self.max_frames = 300  # Maximum frames to record (10 seconds at 30fps)
 
     def _load_ontology(self):
         """Loads the ontology from a JSON file."""

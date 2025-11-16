@@ -21,6 +21,7 @@ If you use the conda yml file, make sure to install LangSAM and SAM2 manually fr
 2. 使用USB将Realsense连接到电脑。
 
 3. 进入`yolo_tuning`文件夹
+   conda activate visionTrain
 
 4.1 Train YOLO 使用`python -m create_dataset`开始构造数据集
 
