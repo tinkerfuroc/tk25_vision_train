@@ -1,5 +1,12 @@
 {
-    "green shampoo bottle" : "shampoo",
-    "white cup" : "penholder",
-    "black square board" : "weight"
+    "a glossy green bag with dark green stripe and red circle" : "QingKaiLing",
+    "a glossry white-trimmed retangular medicinal pouch with green square" : "XiaSangJu",
+    "a glossy white bag with red or green stripe" : "BanLanGen",
+    "a white box with blue stripe":"HuoXiang",
+    "a white box with dark green and orange stripes":"XiTiLiQin",
+    "yellow square box":"XiaoChaiHu",
+    "white orange bottle with some orange markings":"VitaminC",
+    "white bottle with blue markings":"Melatonin",
+    "a white plastic bottle with yellow label":"BiYanKang",
+    "white dotted tray" : "Tray"
 }

@@ -152,9 +152,9 @@ def run_finetuning():
         # Train the model
         results = model.train(
             data=data_yaml_path,
-            epochs=50,
+            epochs=250,
             imgsz=640,
-            batch=8,
+            batch=4,
             project=checkpoint_dir,
             name='yolo_finetuned'
         )
