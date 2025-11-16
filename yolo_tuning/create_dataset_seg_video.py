@@ -662,6 +662,9 @@ class RealSenseVideoDatasetCreator:
         print(" 'left'/'right': Navigate frames")
         print(" 'space': Play/Pause")
         print(" 'm': Enter manual edit mode for current frame")
+        print(" 't': Re-run tracking from current frame onwards")
+        print(" 'x': Discard current frame (remove from video)")
+        print(" 'p': Discard all frames after current frame")
         print(" 's': Save all frames")
         print(" 'esc': Discard and return")
         
@@ -692,9 +695,9 @@ class RealSenseVideoDatasetCreator:
             status = "Playing" if playing else "Paused"
             cv2.putText(annotated_image, f"Frame {current_frame_idx + 1}/{len(self.recorded_frames)} - {status}", 
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(annotated_image, "Press 's' to save, 'm' to edit, 'esc' to cancel", 
+            cv2.putText(annotated_image, "s:save | m:edit | t:retrack | x:delete frame | p:prune after", 
                        (10, display_image.shape[0] - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             
             cv2.imshow("Video Annotation", annotated_image)
             
@@ -728,6 +731,63 @@ class RealSenseVideoDatasetCreator:
                 if edited_predictions is not None:
                     frame_annotations[current_frame_idx] = edited_predictions
                     print("Frame edits saved.")
+            elif key == ord('t'):  # Re-run tracking from current frame
+                playing = False
+                if len(current_predictions) > 0:
+                    print(f"\n--- Re-running tracking from frame {current_frame_idx + 1} ---")
+                    # Track from current frame to the end
+                    for i in range(current_frame_idx + 1, len(self.recorded_frames)):
+                        frame = self.recorded_frames[i]
+                        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        
+                        # Get previous frame's predictions
+                        prev_predictions = frame_annotations[i - 1]
+                        
+                        # Track masks
+                        tracked_predictions = self._track_masks_in_frame(
+                            rgb_image,
+                            prev_predictions.mask,
+                            prev_predictions.xyxy,
+                            prev_predictions.class_id
+                        )
+                        
+                        if tracked_predictions is None or len(tracked_predictions) == 0:
+                            print(f"Warning: Tracking failed at frame {i}. Using previous frame's predictions.")
+                            tracked_predictions = prev_predictions
+                        
+                        frame_annotations[i] = tracked_predictions
+                        
+                        # Display progress
+                        if (i + 1) % 5 == 0 or i == len(self.recorded_frames) - 1:
+                            print(f"Re-tracked {i - current_frame_idx}/{len(self.recorded_frames) - current_frame_idx - 1} frames...")
+                    
+                    print("Re-tracking complete!")
+                else:
+                    print("Current frame has no annotations. Cannot track from empty frame.")
+            elif key == ord('x'):  # Discard current frame entirely
+                playing = False
+                print(f"Deleting frame {current_frame_idx + 1}...")
+                # Remove the frame and its annotations
+                del self.recorded_frames[current_frame_idx]
+                del frame_annotations[current_frame_idx]
+                print(f"Frame deleted. Video now has {len(self.recorded_frames)} frames.")
+                
+                # Adjust current index if needed
+                if len(self.recorded_frames) == 0:
+                    print("No frames remaining. Exiting review mode.")
+                    return None
+                elif current_frame_idx >= len(self.recorded_frames):
+                    current_frame_idx = len(self.recorded_frames) - 1
+            elif key == ord('p'):  # Prune/discard all frames after current
+                playing = False
+                # Truncate the video at current frame
+                print(f"Pruning all frames after frame {current_frame_idx + 1}...")
+                self.recorded_frames = self.recorded_frames[:current_frame_idx + 1]
+                frame_annotations = frame_annotations[:current_frame_idx + 1]
+                print(f"Video now has {len(self.recorded_frames)} frames.")
+                # Ensure we don't go out of bounds
+                if current_frame_idx >= len(self.recorded_frames):
+                    current_frame_idx = len(self.recorded_frames) - 1
             
             # Auto-advance if playing
             if playing:
@@ -804,23 +864,22 @@ class RealSenseVideoDatasetCreator:
                     if new_selected is not None:
                         selected_idx = new_selected
             else:
-                if not kept_indices:
-                    continue
-                
-                if key == 65362:  # Up arrow
-                    selected_idx = (selected_idx - 1 + len(kept_indices)) % len(kept_indices)
-                elif key == 65364:  # Down arrow
-                    selected_idx = (selected_idx + 1) % len(kept_indices)
-                elif key == ord('d'):
-                    if kept_indices:
-                        kept_indices.pop(selected_idx)
-                        predictions = predictions[kept_indices]
-                        kept_indices = list(range(len(predictions)))
-                        
-                        if not kept_indices:
-                            print("All detections deleted.")
-                        elif selected_idx >= len(kept_indices):
-                            selected_idx = len(kept_indices) - 1
+                # Regular mode navigation - only navigate if we have indices
+                if kept_indices:
+                    if key == 65362:  # Up arrow
+                        selected_idx = (selected_idx - 1 + len(kept_indices)) % len(kept_indices)
+                    elif key == 65364:  # Down arrow
+                        selected_idx = (selected_idx + 1) % len(kept_indices)
+                    elif key == ord('d'):
+                        if kept_indices:
+                            kept_indices.pop(selected_idx)
+                            predictions = predictions[kept_indices]
+                            kept_indices = list(range(len(predictions)))
+                            
+                            if not kept_indices:
+                                print("All detections deleted.")
+                            elif selected_idx >= len(kept_indices):
+                                selected_idx = len(kept_indices) - 1
 
     def save_video_data(self, frame_annotations):
         """Save all frames and annotations in YOLO segmentation format."""
