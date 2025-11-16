@@ -169,8 +169,8 @@ def run_finetuning():
         # Optionally, move the best model to the root for easy access
         best_model_path = os.path.join(results_dir, 'weights', 'best.pt')
         if os.path.exists(best_model_path):
-            shutil.copy(best_model_path, './yolo_finetuned_best.pt')
-            print(f"Best model copied to ./yolo_finetuned_best.pt")
+            shutil.copy(best_model_path, './yolo_seg_finetuned_best.pt')
+            print(f"Best model copied to ./yolo_seg_finetuned_best.pt")
 
     except Exception as e:
         print(f"An error occurred during training: {e}")
