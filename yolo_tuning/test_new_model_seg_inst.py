@@ -75,12 +75,20 @@ def run_live_test(model_path):
             annotated_image = mask_annotator.annotate(scene=cv_image.copy(), detections=detections)
             annotated_image = label_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
             
+            # save the image using matplotlib
+            import matplotlib.pyplot as plt
+            plt.imshow(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
+            plt.axis('off')
+            plt.show(block=False)
+            plt.pause(0.01)
+            plt.clf()
+            
             # Display the frame
-            cv2.imshow("Live Test", annotated_image)
+            # cv2.imshow("Live Test", annotated_image)
 
             # Check for quit command
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     break
 
     finally:
         # Cleanup

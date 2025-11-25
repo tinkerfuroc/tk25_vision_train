@@ -147,12 +147,13 @@ def run_finetuning():
     print("--- Starting YOLO Training ---")
     try:
         # Load a pretrained segmentation model.
-        model = YOLO('yolo11s-seg.pt')
+        # model = YOLO('yolo11s-seg.pt')
+        model = YOLO('yolo11m-seg.pt')
 
         # Train the model
         results = model.train(
             data=data_yaml_path,
-            epochs=250,
+            epochs=100,
             imgsz=640,
             batch=4,
             project=checkpoint_dir,
