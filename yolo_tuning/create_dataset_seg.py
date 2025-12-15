@@ -33,13 +33,17 @@ def pre_cache_tokenizer():
 load_dotenv()
 
 class RealSenseDatasetCreator:
-    def __init__(self):
+    def __init__(self, output_dir=None, ontology_path=None, sam_checkpoint=None, device=None):
         print("Initializing RealSenseDatasetCreator...")
         # Determine device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device:
+            self.device = torch.device(device)
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
         # Initialize the base model for labeling
+        self.ontology_path = ontology_path or os.getenv("ONTOLOGY_PATH", "resource/ontology.json")
         self.ontology = self._load_ontology()
         # Keys are prompts for LangSAM, values are class names for display/training
         self.prompts = list(self.ontology.keys()) if self.ontology else []
@@ -56,7 +60,7 @@ class RealSenseDatasetCreator:
         sam_type = "vit_b"
         script_dir = os.path.dirname(os.path.abspath(__file__))
         default_sam_path = os.path.join(script_dir, "..", "sam_vit_b_01ec64.pth")
-        sam_checkpoint = os.getenv("SAM_CHECKPOINT_PATH", default_sam_path)
+        sam_checkpoint = sam_checkpoint or os.getenv("SAM_CHECKPOINT_PATH", default_sam_path)
         if not os.path.exists(sam_checkpoint):
             print(f"SAM checkpoint not found at {sam_checkpoint}. Please download it or update the path in your .env file.")
             self.sam_predictor = None
@@ -77,7 +81,7 @@ class RealSenseDatasetCreator:
         print("RealSense camera pipeline started.")
 
         # Output directory setup
-        self.output_dir = os.getenv("DATASET_DIR", "dataset_seg")
+        self.output_dir = output_dir or os.getenv("DATASET_SEG_DIR", os.getenv("DATASET_DIR", "dataset_seg"))
         self.images_dir = os.path.join(self.output_dir, "images")
         self.labels_dir = os.path.join(self.output_dir, "labels")
         os.makedirs(self.images_dir, exist_ok=True)
@@ -91,11 +95,10 @@ class RealSenseDatasetCreator:
     def _load_ontology(self):
         """Loads the ontology from a JSON file."""
         print("Loading ontology...")
-        ontology_path = os.getenv("ONTOLOGY_PATH", "resource/ontology.json")
         try:
-            with open(ontology_path, 'r') as f:
+            with open(self.ontology_path, 'r') as f:
                 ontology_data = json.load(f)
-            print(f"Loaded ontology from {ontology_path}")
+            print(f"Loaded ontology from {self.ontology_path}")
             return ontology_data
         except (FileNotFoundError, json.JSONDecodeError) as e:
             print(f"Failed to load ontology file: {e}. Aborting.")

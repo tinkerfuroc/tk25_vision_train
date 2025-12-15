@@ -1,46 +1,51 @@
 # YOLO Finetuning
-For identification of competition items
+Package for collecting data, splitting datasets, and training YOLO (boxes + masks) for competition items.
 
 ## Requirements
-Python 3.10，use `pip install -r requirements.txt`
+- Python 3.10; install with `pip install -r requirements.txt`.
+- Download `sam_vit_b_01ec64.pth` to the repo root. If you use the conda yml, install LangSAM and SAM2 manually from GitHub.
 
-Download 'sam_vit_b_01ec64.pth' to .
+## Ontology
+Edit `yolo_tuning/resource/ontology.json` with GroundingDINO/LangSAM prompts mapped to class labels:
+```json
+{"<prompt>": "label"}
+```
 
-If you use the conda yml file, make sure to install LangSAM and SAM2 manually from github.
+## Quick workflow (all commands run from repo root)
+Environment variables (optional): `DATASET_DIR` (det), `DATASET_SEG_DIR` (seg), `ONTOLOGY_PATH`, `CHECKPOINT_DIR`, `YOLO_BASE_WEIGHTS`, `YOLO_SEG_WEIGHTS`, `VISION_TRAIN_SEED`.
 
-## Dataset construction
-Currently only supports live sampling through a Realsense camera.
+### 1) Collect data (RealSense live)
+- Boxes only: `python -m yolo_tuning.vision_tuning.cli create-bbox --dataset-dir dataset_det`
+- Seg masks: `python -m yolo_tuning.vision_tuning.cli create-seg --dataset-dir dataset_seg`
+- Seg masks via continuous stream (not from file): `python -m yolo_tuning.vision_tuning.cli create-seg-stream --dataset-dir dataset_seg`
 
-You may change the directory of saved samples in `.env`. Ensure the folder under `DATASET_DIR` is empty (otherwise old files will be mixed into your new data).
+Controls are unchanged from the original scripts:
+- Boxes: up/down to select, `d` delete, `s` save, space skip, `q` quit (fix prompts if many errors).
+- Seg: space capture, up/down to select masks, `d` delete, `m` manual mode (click points then Enter, choose label with arrows, `a` add), `s` save, `esc` discard.
 
+### 2) Split raw dataset
+If your dataset is not already split:  
+`python -m yolo_tuning.vision_tuning.cli split --dataset-dir dataset_det --train-ratio 0.8`
 
-1. Enter the labels and their corresponding GroundingDINO prompts in `resources/ontology.json`：
-    ```json
-    {"<GroudingDINO prompt>" : "label"}
-    ```
+### 3) Train
+- YOLO detector: `python -m yolo_tuning.vision_tuning.cli train-bbox --dataset-dir dataset_det`
+- YOLO-seg: `python -m yolo_tuning.vision_tuning.cli train-seg --dataset-dir dataset_seg`
 
-2. Connect Realsense camera to computer using USB cable。
+After training, best weights are copied to `yolo_finetuned_best.pt` or `yolo_seg_finetuned_best.pt`; full logs live in `CHECKPOINT_DIR/<run>/`.
 
-3. cd into `yolo_tuning` and activate your conda environment
-    ```
-    conda activate visionTrain
-    ```
+### 4) Live test
+- Detector: `python -m yolo_tuning.vision_tuning.cli test-bbox --model-path yolo_finetuned_best.pt`
+- Segmenter: `python -m yolo_tuning.vision_tuning.cli test-seg --model-path yolo_seg_finetuned_best.pt`
 
-4 If you wish to train regular YOLO (bounding box only), use `python -m create_dataset`, otherwise, for YOLO-seg, use `python -m create_dataset_seg` to start construction your dataset
+## Legacy entrypoints (still work)
+- Dataset split: `python -m yolo_tuning.prepare_dataset`
+- Training: `python -m yolo_tuning.tune_YOLOv11` or `python -m yolo_tuning.tune_YOLOv11_seg`
+- Live tests: `python -m yolo_tuning.test_new_model` or `python -m yolo_tuning.test_new_model_seg`
 
-5. An OpenCV window should pop up, follow the instructions shown in terminal for a smooth dataset creation process!
-
-6. 标定完后按`q`结束。
-
-## Training
-
-1. cd into `yolo_tuning`
-
-2. use `python -m prepare_dataset` to split the dataset into YOLO-appropriate format
-
-2. Use `python -m tune_YOLOv11` or `python -m tune_YOLOv11_seg` to start training
-
-3. The finishe best segmentation shall be saved to `yolo_finetuned_best.pt` or `yolo_seg_finetuned_best.pt`
-
-## Testing the result of your training
-Plug in realsense, cd into `yolo_tuning`, and use `python -m test_new_model` or `python -m test_new_model_seg` to test your newly trained model live!
+## Package layout (developer facing)
+- `yolo_tuning/vision_tuning/config.py` – central configuration (paths, weights, device).
+- `yolo_tuning/vision_tuning/ontology.py` – load ontology JSON and emit YOLO data.yaml.
+- `yolo_tuning/vision_tuning/datasets/` – bbox/seg/stream collectors and dataset splitter.
+- `yolo_tuning/vision_tuning/training/` – YOLO training helpers for detector/segmenter.
+- `yolo_tuning/vision_tuning/testing/` – wrappers for live inference.
+- `yolo_tuning/vision_tuning/cli.py` – single CLI entry with subcommands for all tasks.

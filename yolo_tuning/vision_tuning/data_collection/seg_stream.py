@@ -1,0 +1,353 @@
+"""RealSense stream-based segmentation collection."""
+
+import copy
+import json
+import os
+from typing import Optional
+
+import cv2
+import numpy as np
+import pyrealsense2 as rs
+import supervision as sv
+import torch
+from PIL import Image
+from collections import deque
+from dotenv import load_dotenv
+from lang_sam import LangSAM
+from segment_anything import SamPredictor, sam_model_registry
+from thefuzz import process
+
+# Load environment variables for defaults
+load_dotenv()
+
+
+def pre_cache_tokenizer() -> None:
+    """Downloads and caches the tokenizer model from Hugging Face."""
+    print("Pre-caching tokenizer model 'bert-base-uncased'...")
+    try:
+        from transformers import AutoTokenizer
+
+        AutoTokenizer.from_pretrained("bert-base-uncased")
+        print("Tokenizer is cached.")
+    except Exception as e:  # pragma: no cover - network/hardware dependent
+        print(f"Failed to download tokenizer: {e}")
+        print("Please check your internet connection and firewall settings.")
+        print("You may need to configure HTTP/HTTPS proxies if you are behind a firewall.")
+
+
+class RealSenseSegStreamCollector:
+    """Continuous RealSense stream capture for segmentation masks."""
+
+    def __init__(
+        self,
+        *,
+        output_dir: Optional[str] = None,
+        ontology_path: Optional[str] = None,
+        sam_checkpoint: Optional[str] = None,
+        device: Optional[str] = None,
+    ):
+        print("Initializing RealSenseSegStreamCollector...")
+        self.device = torch.device(device) if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+
+        self.ontology_path = ontology_path or os.getenv("ONTOLOGY_PATH", "resource/ontology.json")
+        self.ontology = self._load_ontology()
+        self.prompts = list(self.ontology.keys()) if self.ontology else []
+        self.class_names = list(self.ontology.values()) if self.ontology else []
+        self.prompt_to_class = self.ontology if self.ontology else {}
+
+        print("Loading LangSAM model...")
+        self.base_model = LangSAM()
+        print("LangSAM model loaded.")
+
+        print("Loading SAM model for tracking and manual annotation...")
+        sam_type = "vit_b"
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        default_sam_path = os.path.join(script_dir, "..", "..", "sam_vit_b_01ec64.pth")
+        sam_checkpoint = sam_checkpoint or os.getenv("SAM_CHECKPOINT_PATH", default_sam_path)
+        if not os.path.exists(sam_checkpoint):
+            print(f"SAM checkpoint not found at {sam_checkpoint}. Please download it or update the path in your .env file.")
+            self.sam_predictor = None
+        else:
+            sam = sam_model_registry[sam_type](checkpoint=sam_checkpoint)
+            sam.to(device=self.device)
+            self.sam_predictor = SamPredictor(sam)
+            print("SAM model loaded.")
+
+        print("Starting RealSense camera pipeline...")
+        self.pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 60)
+        self.pipeline.start(config)
+        print("RealSense camera pipeline started.")
+
+        self.output_dir = output_dir or os.getenv("DATASET_SEG_DIR", os.getenv("DATASET_DIR", "dataset_seg_stream"))
+        self.images_dir = os.path.join(self.output_dir, "images")
+        self.labels_dir = os.path.join(self.output_dir, "labels")
+        os.makedirs(self.images_dir, exist_ok=True)
+        os.makedirs(self.labels_dir, exist_ok=True)
+
+        self.mouse_points = []
+        self.current_class_idx = 0
+        self.temp_manual_mask = None
+        self.is_recording = False
+        self.recorded_frames = []
+        self.max_frames = 300
+
+    def _load_ontology(self):
+        print("Loading ontology...")
+        try:
+            with open(self.ontology_path, "r") as f:
+                ontology_data = json.load(f)
+            print(f"Loaded ontology from {self.ontology_path}")
+            return ontology_data
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Failed to load ontology file: {e}. Aborting.")
+            return None
+
+    def mouse_callback(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            top, left = 50, 50
+            if x >= left and y >= top:
+                adjusted_x = x - left
+                adjusted_y = y - top
+                self.mouse_points.append((adjusted_x, adjusted_y))
+                print(f"Added point: ({adjusted_x}, {adjusted_y})")
+
+    def _create_padded_masks(self, masks, image_shape, top, bottom, left, right):
+        padded_masks = []
+        for mask in masks:
+            padded_mask = np.zeros((image_shape[0] + top + bottom, image_shape[1] + left + right), dtype=bool)
+            padded_mask[top : top + image_shape[0], left : left + image_shape[1]] = mask
+            padded_masks.append(padded_mask)
+        return np.array(padded_masks)
+
+    def _prepare_predictions_for_display(self, predictions, left, top, image_shape, padding):
+        predictions_for_display = copy.deepcopy(predictions)
+        predictions_for_display.xyxy += np.array([left, top, left, top])
+
+        top_pad, bottom_pad, left_pad, right_pad = padding
+        padded_masks = self._create_padded_masks(
+            predictions_for_display.mask, image_shape, top_pad, bottom_pad, left_pad, right_pad
+        )
+        predictions_for_display.mask = padded_masks
+
+        return predictions_for_display
+
+    def _create_labels(self, predictions, prefix=""):
+        labels = [
+            f"{prefix}#{idx} {self.class_names[cid]} {conf:.2f}"
+            for idx, (cid, conf) in enumerate(zip(predictions.class_id, predictions.confidence))
+        ]
+        return labels
+
+    def _render_thumbnail(self, annotated_image, mask, class_id, top, is_preview=False):
+        mask_coords = np.argwhere(mask)
+        if len(mask_coords) == 0:
+            return annotated_image
+
+        y1, x1 = mask_coords.min(axis=0)
+        y2, x2 = mask_coords.max(axis=0)
+        crop_h, crop_w = y2 - y1, x2 - x1
+
+        if crop_h <= 0 or crop_w <= 0:
+            return annotated_image
+
+        cropped_region = annotated_image[y1:y2, x1:x2].copy()
+        max_thumb_h = top - 10
+        scale = min(max_thumb_h / crop_h, 150 / crop_w, 1.0)
+        thumb_w = int(crop_w * scale)
+        thumb_h = int(crop_h * scale)
+
+        if thumb_h > 0 and thumb_w > 0:
+            thumbnail = cv2.resize(cropped_region, (thumb_w, thumb_h))
+            thumb_x = annotated_image.shape[1] - thumb_w - 10
+            thumb_y = 5
+            annotated_image[thumb_y : thumb_y + thumb_h, thumb_x : thumb_x + thumb_w] = thumbnail
+            color = (255, 0, 0) if is_preview else (0, 0, 255)
+            cv2.rectangle(annotated_image, (thumb_x, thumb_y), (thumb_x + thumb_w, thumb_y + thumb_h), color, 2)
+
+        return annotated_image
+
+    def _run_automatic_segmentation(self, cv_image):
+        rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_image)
+        text_prompt = ". ".join(self.prompts)
+        print("Using text prompt:", text_prompt)
+        predictions = self.base_model.predict([pil_image], [text_prompt])
+        print(predictions[0].keys())
+
+        all_detections = []
+        if predictions:
+            result = predictions[0]
+            boxes = result["boxes"]
+            masks = result["masks"]
+            scores = result["scores"]
+            labels = result["labels"]
+
+            detections = sv.Detections(
+                xyxy=np.array(boxes),
+                mask=np.array(masks),
+                confidence=np.array(scores),
+                class_id=np.array(labels),
+            )
+            all_detections.append(detections)
+
+        return all_detections[0] if all_detections else None
+
+    def _manual_segmentation(self, cv_image):
+        if self.sam_predictor is None:
+            print("SAM predictor not available. Cannot perform manual segmentation.")
+            return None
+
+        rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+        self.sam_predictor.set_image(rgb_image)
+
+        masks, _, _ = self.sam_predictor.predict(
+            point_coords=np.array(self.mouse_points),
+            point_labels=np.ones(len(self.mouse_points)),
+            multimask_output=False,
+        )
+
+        self.mouse_points.clear()
+        if masks is None or len(masks) == 0:
+            print("No mask generated from manual points.")
+            return None
+
+        return masks[0]
+
+    def save_video_data(self, frame_annotations):
+        for idx, (image, detections) in enumerate(frame_annotations):
+            img_filename = os.path.join(self.images_dir, f"{len(os.listdir(self.images_dir)):06d}.jpg")
+            cv2.imwrite(img_filename, image)
+
+            label_filename = os.path.join(self.labels_dir, os.path.splitext(os.path.basename(img_filename))[0] + ".txt")
+            image_height, image_width = image.shape[:2]
+
+            with open(label_filename, "w") as f:
+                for mask, class_id in zip(detections.mask, detections.class_id):
+                    ys, xs = np.where(mask)
+                    if len(xs) == 0 or len(ys) == 0:
+                        continue
+                    x_center = np.mean(xs) / image_width
+                    y_center = np.mean(ys) / image_height
+                    box_width = (np.max(xs) - np.min(xs)) / image_width
+                    box_height = (np.max(ys) - np.min(ys)) / image_height
+                    f.write(f"{class_id} {x_center} {y_center} {box_width} {box_height}\n")
+
+    def _review_and_edit_video(self, frame_annotations, mask_annotator, label_annotator, padding):
+        pad_top, pad_bottom, pad_left, pad_right = padding
+        frame_idx = 0
+        kept_frames = list(range(len(frame_annotations)))
+        selected_idx = 0
+
+        while True:
+            if not kept_frames:
+                print("No frames kept. Cancelling video save.")
+                return None
+
+            frame_image, detections = frame_annotations[kept_frames[frame_idx]]
+            display_detections = self._prepare_predictions_for_display(
+                detections, pad_left, pad_top, frame_image.shape, padding
+            )
+
+            annotated_image = mask_annotator.annotate(
+                scene=cv2.copyMakeBorder(
+                    frame_image, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=[0, 0, 0]
+                ),
+                detections=display_detections,
+            )
+            labels = self._create_labels(display_detections, prefix=f"F{kept_frames[frame_idx]}")
+            annotated_image = label_annotator.annotate(
+                scene=annotated_image, detections=display_detections, labels=labels
+            )
+            cv2.imshow("Video Review", annotated_image)
+            key = cv2.waitKeyEx(0)
+
+            if key == ord("q"):
+                return None
+            elif key == ord("s"):
+                return [frame_annotations[i] for i in kept_frames]
+            elif key == 65364:
+                frame_idx = (frame_idx + 1) % len(kept_frames)
+            elif key == 65362:
+                frame_idx = (frame_idx - 1 + len(kept_frames)) % len(kept_frames)
+            elif key == ord("d"):
+                kept_frames.pop(frame_idx)
+                if frame_idx >= len(kept_frames):
+                    frame_idx = 0
+
+    def run(self):
+        if not self.base_model:
+            return
+
+        print("Starting stream capture...")
+        print("Press 'r' to start/stop recording, 'q' to quit after reviewing.")
+
+        mask_annotator = sv.MaskAnnotator()
+        label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1, text_position=sv.Position.BOTTOM_LEFT)
+        padding = (50, 50, 50, 50)
+        pad_top, pad_bottom, pad_left, pad_right = padding
+
+        cv2.namedWindow("Stream")
+        cv2.setMouseCallback("Stream", self.mouse_callback)
+
+        frame_buffer = deque(maxlen=600)
+
+        try:
+            while True:
+                frames = self.pipeline.wait_for_frames()
+                color_frame = frames.get_color_frame()
+                if not color_frame:
+                    continue
+
+                cv_image = np.asanyarray(color_frame.get_data())
+                frame_buffer.append(cv_image.copy())
+
+                display_frame = cv2.copyMakeBorder(
+                    cv_image, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=[0, 0, 0]
+                )
+                cv2.putText(
+                    display_frame,
+                    "Recording..." if self.is_recording else "Idle",
+                    (20, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0) if self.is_recording else (0, 0, 255),
+                    2,
+                )
+                cv2.imshow("Stream", display_frame)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    break
+                if key == ord("r"):
+                    self.is_recording = not self.is_recording
+                    if self.is_recording:
+                        self.recorded_frames = []
+                    else:
+                        print("Recording stopped. Processing frames...")
+                        frame_annotations = []
+                        for frame in list(frame_buffer)[-self.max_frames :]:
+                            det = self._run_automatic_segmentation(frame)
+                            if det is not None:
+                                frame_annotations.append((frame, det))
+
+                        if frame_annotations:
+                            final_annotations = self._review_and_edit_video(
+                                frame_annotations, mask_annotator, label_annotator, padding
+                            )
+                            if final_annotations is not None:
+                                self.save_video_data(final_annotations)
+                            else:
+                                print("Video annotation cancelled.")
+                        else:
+                            print("No frames recorded.")
+
+        finally:
+            self.pipeline.stop()
+            cv2.destroyAllWindows()
+            print("RealSense camera pipeline stopped.")
+
+
+__all__ = ["RealSenseSegStreamCollector", "pre_cache_tokenizer"]

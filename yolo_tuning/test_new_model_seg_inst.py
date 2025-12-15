@@ -99,6 +99,6 @@ def run_live_test(model_path):
 
 if __name__ == '__main__':
     # Default path where the training script saves the best model
-    default_model_path = os.getenv("BEST_MODEL_PATH", "yolo_finetuned_seg_best.pt")
+    default_model_path = os.getenv("BEST_MODEL_PATH", "yolo_seg_finetuned_best.pt")
     print("using model path " + default_model_path)
     run_live_test(default_model_path)
