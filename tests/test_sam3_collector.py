@@ -20,6 +20,8 @@ class FakeTracker:
 
     def track(self, prev_masks, frame):
         self.calls += 1
+        if not prev_masks:
+            return []
         shifted = np.roll(prev_masks[0].mask, 1, axis=1)
         return [SAM3Mask(mask=shifted, label=prev_masks[0].label)]
 

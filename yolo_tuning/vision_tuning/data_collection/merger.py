@@ -17,7 +17,7 @@ def merge_yolo_dataset(dataset_path: str) -> Tuple[int, int]:
     val_labels = os.path.join(labels_root, "val")
 
     if not all(os.path.isdir(p) for p in (images_root, labels_root)):
-        raise FileNotFoundError("Expected images/ and labels/ folders inside the dataset directory.")
+        raise FileNotFoundError(f"Expected images/ and labels/ folders inside the dataset directory: {dataset_path}")
 
     split_dirs = (train_images, val_images, train_labels, val_labels)
     if not any(os.path.isdir(p) for p in split_dirs):
@@ -36,7 +36,9 @@ def merge_yolo_dataset(dataset_path: str) -> Tuple[int, int]:
                 continue
             dest = os.path.join(dest_dir, name)
             if os.path.exists(dest):
-                raise FileExistsError(f"Destination file already exists: {dest}")
+                raise FileExistsError(
+                    f"Destination file already exists: {dest}. Move or rename the existing file before merging."
+                )
             shutil.move(src, dest)
             moved += 1
         return moved

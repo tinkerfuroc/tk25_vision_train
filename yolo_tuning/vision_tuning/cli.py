@@ -2,6 +2,7 @@ import argparse
 from typing import Optional
 
 from yolo_tuning.vision_tuning.config import VisionConfig
+from yolo_tuning.vision_tuning.data_collection.merger import merge_yolo_dataset
 from yolo_tuning.vision_tuning.data_collection.splitter import split_yolo_dataset
 from yolo_tuning.vision_tuning.training import train_detector, train_segmenter
 
@@ -135,8 +136,6 @@ def main(argv: Optional[list] = None) -> None:
         split_yolo_dataset(dataset_root, train_ratio=args.train_ratio, seed=args.seed or cfg.seed)
 
     elif args.command == "merge":
-        from yolo_tuning.vision_tuning.data_collection.merger import merge_yolo_dataset
-
         cfg = _config_from_args(
             base_config,
             dataset_dir=args.dataset_dir,
