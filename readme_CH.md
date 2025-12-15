@@ -48,3 +48,8 @@ If you use the conda yml file, make sure to install LangSAM and SAM2 manually fr
 
 ## 测试训练结果
 连上realsense，进入`yolo_tuning`文件夹，使用`python -m test_new_model`即可开始实时测试新权重的识别能力。
+
+## 新工具与结构
+- 使用 `python -m yolo_tuning.vision_tuning.cli split --dataset-dir 数据集目录` 将原始数据拆分为 train/val；需要合并回单层目录用于追加数据时，运行 `python -m yolo_tuning.vision_tuning.cli merge --dataset-dir 数据集目录`。
+- 额外的语言引导分割/跟踪采集：`python -m yolo_tuning.vision_tuning.cli create-seg-sam3 --images-dir 原始帧目录 --dataset-dir 输出数据集 --prompts \"提示词1\" \"提示词2\"`。
+- 代码已经重组为 data_collection、training、testing 三个子包，相关工具和API均在这些包下。
