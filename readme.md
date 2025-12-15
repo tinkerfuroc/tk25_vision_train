@@ -18,6 +18,8 @@ Environment variables (optional): `DATASET_DIR` (det), `DATASET_SEG_DIR` (seg), 
 - Boxes only: `python -m yolo_tuning.vision_tuning.cli create-bbox --dataset-dir dataset_det`
 - Seg masks: `python -m yolo_tuning.vision_tuning.cli create-seg --dataset-dir dataset_seg`
 - Seg masks via continuous stream (not from file): `python -m yolo_tuning.vision_tuning.cli create-seg-stream --dataset-dir dataset_seg`
+- SAM3 language-grounded segmentation/tracking over existing frames:  
+  `python -m yolo_tuning.vision_tuning.cli create-seg-sam3 --images-dir raw_frames --dataset-dir dataset_seg --prompts "a mug" "a bottle"`
 
 Controls are unchanged from the original scripts:
 - Boxes: up/down to select, `d` delete, `s` save, space skip, `q` quit (fix prompts if many errors).
@@ -26,6 +28,8 @@ Controls are unchanged from the original scripts:
 ### 2) Split raw dataset
 If your dataset is not already split:  
 `python -m yolo_tuning.vision_tuning.cli split --dataset-dir dataset_det --train-ratio 0.8`
+To merge train/val back to a flat dataset (e.g., before appending more data):  
+`python -m yolo_tuning.vision_tuning.cli merge --dataset-dir dataset_det`
 
 ### 3) Train
 - YOLO detector: `python -m yolo_tuning.vision_tuning.cli train-bbox --dataset-dir dataset_det`
@@ -45,7 +49,7 @@ After training, best weights are copied to `yolo_finetuned_best.pt` or `yolo_seg
 ## Package layout (developer facing)
 - `yolo_tuning/vision_tuning/config.py` – central configuration (paths, weights, device).
 - `yolo_tuning/vision_tuning/ontology.py` – load ontology JSON and emit YOLO data.yaml.
-- `yolo_tuning/vision_tuning/datasets/` – bbox/seg/stream collectors and dataset splitter.
+- `yolo_tuning/vision_tuning/data_collection/` – bbox/seg collectors, SAM3 collector, splitter/merger utilities.
 - `yolo_tuning/vision_tuning/training/` – YOLO training helpers for detector/segmenter.
 - `yolo_tuning/vision_tuning/testing/` – wrappers for live inference.
 - `yolo_tuning/vision_tuning/cli.py` – single CLI entry with subcommands for all tasks.

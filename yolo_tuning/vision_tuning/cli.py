@@ -2,6 +2,7 @@ import argparse
 from typing import Optional
 
 from yolo_tuning.vision_tuning.config import VisionConfig
+from yolo_tuning.vision_tuning.data_collection.merger import merge_yolo_dataset
 from yolo_tuning.vision_tuning.data_collection.splitter import split_yolo_dataset
 from yolo_tuning.vision_tuning.training import train_detector, train_segmenter
 
@@ -46,6 +47,14 @@ def build_parser() -> argparse.ArgumentParser:
     split.add_argument("--dataset-dir", default=None, help="Dataset root containing images/ and labels/.")
     split.add_argument("--train-ratio", type=float, default=0.8, help="Ratio of images for training.")
     split.add_argument("--seed", type=int, default=None, help="RNG seed (defaults to config).")
+
+    merge = sub.add_parser("merge", parents=[common_args], help="Merge train/val back into flat YOLO dataset.")
+    merge.add_argument("--dataset-dir", default=None, help="Dataset root containing split images/ and labels/.")
+
+    sam3 = sub.add_parser("create-seg-sam3", parents=[common_args], help="Collect segmentation masks using SAM3.")
+    sam3.add_argument("--images-dir", required=True, help="Directory of frames to segment/track.")
+    sam3.add_argument("--dataset-dir", default=None, help="Output dataset directory for segmentation.")
+    sam3.add_argument("--prompts", nargs="*", default=None, help="Prompts to guide language-grounded SAM3.")
 
     train_bbox = sub.add_parser("train-bbox", parents=[common_args], help="Fine-tune YOLO detector.")
     train_bbox.add_argument("--dataset-dir", default=None, help="Dataset root (bounding boxes).")
@@ -126,6 +135,19 @@ def main(argv: Optional[list] = None) -> None:
         dataset_root = args.dataset_dir or cfg.dataset_dir
         split_yolo_dataset(dataset_root, train_ratio=args.train_ratio, seed=args.seed or cfg.seed)
 
+    elif args.command == "merge":
+        cfg = _config_from_args(
+            base_config,
+            dataset_dir=args.dataset_dir,
+            seg_dataset_dir=args.dataset_dir,
+            ontology=args.ontology_path,
+            checkpoint=args.checkpoint_dir,
+            device=args.device,
+        )
+        dataset_root = args.dataset_dir or cfg.dataset_dir
+        images_moved, labels_moved = merge_yolo_dataset(dataset_root)
+        print(f"Merged {images_moved} images and {labels_moved} labels into flat dataset at {dataset_root}")
+
     elif args.command == "train-bbox":
         cfg = _config_from_args(
             base_config,
@@ -177,6 +199,25 @@ def main(argv: Optional[list] = None) -> None:
         from yolo_tuning.vision_tuning.testing import run_live_segmentation
 
         run_live_segmentation(args.model_path)
+
+    elif args.command == "create-seg-sam3":
+        from yolo_tuning.vision_tuning.data_collection.sam3 import SAM3SegmentationCollector
+
+        cfg = _config_from_args(
+            base_config,
+            dataset_dir=None,
+            seg_dataset_dir=args.dataset_dir,
+            ontology=args.ontology_path,
+            checkpoint=args.checkpoint_dir,
+            device=args.device,
+        )
+        collector = SAM3SegmentationCollector(
+            output_dir=args.dataset_dir or cfg.seg_dataset_dir,
+            ontology_path=args.ontology_path or cfg.ontology_path,
+        )
+        frames = collector.load_frames_from_dir(args.images_dir)
+        saved = collector.collect(frames, prompts=args.prompts)
+        print(f"SAM3 segmentation complete. Saved {saved} frame(s) to {collector.output_dir}")
 
 
 if __name__ == "__main__":
