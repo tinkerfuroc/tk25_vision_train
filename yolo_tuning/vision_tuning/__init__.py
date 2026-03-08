@@ -1,31 +1,27 @@
 """Utilities for building datasets and fine-tuning YOLO detectors/segmenters."""
 
 from .config import VisionConfig
-from .ontology import Ontology
-from .data_collection import (
-    BBoxCollector,
-    SegmentationCollector,
-    SegmentationStreamCollector,
-    run_bbox_collection,
-    run_seg_collection,
-    run_seg_stream_collection,
-    split_yolo_dataset,
+from .endpoints import (
+    collect_bbox,
+    collect_seg,
+    collect_seg_stream,
+    split_dataset,
+    test_bbox,
+    test_seg,
+    train_bbox,
+    train_seg,
 )
-from .training import train_detector, train_segmenter
-from .testing import run_live_detection, run_live_segmentation
+from .ontology import Ontology
 
 __all__ = [
     "VisionConfig",
     "Ontology",
-    "split_yolo_dataset",
-    "BBoxCollector",
-    "SegmentationCollector",
-    "SegmentationStreamCollector",
-    "run_bbox_collection",
-    "run_seg_collection",
-    "run_seg_stream_collection",
-    "train_detector",
-    "train_segmenter",
-    "run_live_detection",
-    "run_live_segmentation",
+    "collect_bbox",
+    "collect_seg",
+    "collect_seg_stream",
+    "split_dataset",
+    "train_bbox",
+    "train_seg",
+    "test_bbox",
+    "test_seg",
 ]

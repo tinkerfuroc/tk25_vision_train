@@ -21,11 +21,15 @@ test/
 # gitignore for cursor
 .cursorrules
 .cursor/
+.codex/
 
 # gitignore for YOLO tuning and dataset creation
-*dataset*/
-*.pt
+**dataset*/
+**.pt
 runs*/
 
 sam_vit_b_01ec64.pth
 requirements_base.txt
+
+**docs/_**.md
+groundingdino/**

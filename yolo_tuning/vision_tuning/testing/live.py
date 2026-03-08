@@ -1,19 +1,16 @@
-"""Convenient wrappers around live test scripts."""
+"""Backward-compatible live testing wrappers."""
 
 from typing import Optional
 
-from yolo_tuning.test_new_model import run_live_test as _run_bbox_live
-from yolo_tuning.test_new_model_seg import run_live_test as _run_seg_live
+from yolo_tuning.vision_tuning.testing.workflow import run_detection_live, run_segmentation_live
 
 
 def run_live_detection(model_path: Optional[str] = None) -> None:
-    """Run live detection test (bbox)."""
-    _run_bbox_live(model_path or "yolo_finetuned_best.pt")
+    run_detection_live(model_path=model_path)
 
 
 def run_live_segmentation(model_path: Optional[str] = None) -> None:
-    """Run live segmentation test."""
-    _run_seg_live(model_path or "yolo_seg_finetuned_best.pt")
+    run_segmentation_live(model_path=model_path)
 
 
 __all__ = ["run_live_detection", "run_live_segmentation"]

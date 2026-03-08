@@ -1,27 +1,68 @@
-"""RealSense stream-based segmentation collection."""
+"""Stream segmentation collection helpers (SAM3 backend + input modes)."""
 
-from yolo_tuning.create_dataset_seg_stream import RealSenseSegStreamDatasetCreator
+from typing import Optional
+
 from yolo_tuning.vision_tuning.config import VisionConfig
+from yolo_tuning.vision_tuning.data_collection.seg_engine import SegEngineOptions, SegmentationCollectionEngine
 
 
 class SegmentationStreamCollector:
-    """Wrapper for the continuous RealSense stream segmentation workflow."""
+    """Collector wrapper for stream-like segmentation workflows."""
 
-    def __init__(self, config: VisionConfig, output_dir: str | None = None):
+    def __init__(
+        self,
+        config: VisionConfig,
+        output_dir: str | None = None,
+        *,
+        input_mode: str = "realsense",
+        source_path: Optional[str] = None,
+        enable_crop_augment: bool = False,
+        crop_variants: int = 2,
+        crop_scale_min: float = 1.05,
+        crop_scale_max: float = 1.30,
+        max_frames: Optional[int] = 300,
+    ):
         self.config = config
         self.output_dir = output_dir or config.seg_dataset_dir
+        self.options = SegEngineOptions(
+            input_mode=input_mode,
+            source_path=source_path,
+            enable_crop_augment=enable_crop_augment,
+            crop_variants=crop_variants,
+            crop_scale_min=crop_scale_min,
+            crop_scale_max=crop_scale_max,
+            max_frames=max_frames,
+        )
 
     def run(self) -> None:
-        collector = RealSenseSegStreamDatasetCreator(
-            output_dir=self.output_dir,
-            ontology_path=self.config.ontology_path,
-            device=self.config.device,
-        )
-        collector.run()
+        engine = SegmentationCollectionEngine(self.config, self.output_dir, self.options)
+        saved = engine.run()
+        print(f"Saved {saved} sample(s) to {self.output_dir}")
 
 
-def run_seg_stream_collection(config: VisionConfig, output_dir: str | None = None) -> None:
-    SegmentationStreamCollector(config, output_dir).run()
+def run_seg_stream_collection(
+    config: VisionConfig,
+    output_dir: str | None = None,
+    *,
+    input_mode: str = "realsense",
+    source_path: Optional[str] = None,
+    enable_crop_augment: bool = False,
+    crop_variants: int = 2,
+    crop_scale_min: float = 1.05,
+    crop_scale_max: float = 1.30,
+    max_frames: Optional[int] = 300,
+) -> None:
+    SegmentationStreamCollector(
+        config,
+        output_dir,
+        input_mode=input_mode,
+        source_path=source_path,
+        enable_crop_augment=enable_crop_augment,
+        crop_variants=crop_variants,
+        crop_scale_min=crop_scale_min,
+        crop_scale_max=crop_scale_max,
+        max_frames=max_frames,
+    ).run()
 
 
 __all__ = ["SegmentationStreamCollector", "run_seg_stream_collection"]

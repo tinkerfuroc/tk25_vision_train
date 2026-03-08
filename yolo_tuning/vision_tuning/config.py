@@ -27,6 +27,12 @@ class VisionConfig:
     device: str = field(default_factory=_default_device)
     detection_weights: str = field(default_factory=lambda: os.getenv("YOLO_BASE_WEIGHTS", "yolo11s.pt"))
     segmentation_weights: str = field(default_factory=lambda: os.getenv("YOLO_SEG_WEIGHTS", "yolo11s-seg.pt"))
+    sam3_checkpoint_path: str = field(
+        default_factory=lambda: os.getenv(
+            "SAM3_CHECKPOINT_PATH",
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "model", "sam3", "sam3.pt")),
+        )
+    )
     seed: int = field(default_factory=lambda: int(os.getenv("VISION_TRAIN_SEED", "42")))
 
     def override(
@@ -47,5 +53,6 @@ class VisionConfig:
             device=device or self.device,
             detection_weights=self.detection_weights,
             segmentation_weights=self.segmentation_weights,
+            sam3_checkpoint_path=self.sam3_checkpoint_path,
             seed=self.seed,
         )
