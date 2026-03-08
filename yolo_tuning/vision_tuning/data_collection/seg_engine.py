@@ -69,17 +69,43 @@ class SegmentationCollectionEngine:
         class_name = self.ontology[matched_prompt]
         return self.class_names.index(class_name)
 
-    def _save_one(self, image: np.ndarray, boxes_xyxy: np.ndarray, class_ids: np.ndarray) -> None:
+    def _mask_to_polygon(self, mask: np.ndarray, img_w: int, img_h: int) -> Optional[List[float]]:
+        """Convert a binary mask to normalized polygon coordinates for YOLO segmentation."""
+        mask_uint8 = (mask * 255).astype(np.uint8)
+        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        # Take the largest contour
+        contour = max(contours, key=cv2.contourArea)
+        if len(contour) < 3:
+            return None
+        # Flatten and normalize
+        polygon = []
+        for point in contour:
+            x, y = point[0]
+            polygon.extend([x / img_w, y / img_h])
+        return polygon
+
+    def _save_one(self, image: np.ndarray, boxes_xyxy: np.ndarray, class_ids: np.ndarray, masks: Optional[np.ndarray] = None) -> None:
         idx = self._next_index()
         image_path = os.path.join(self.images_dir, f"{idx:06d}.jpg")
         label_path = os.path.join(self.labels_dir, f"{idx:06d}.txt")
         cv2.imwrite(image_path, image)
         h, w = image.shape[:2]
         with open(label_path, "w") as f:
-            for box, class_id in zip(boxes_xyxy, class_ids):
+            for i, (box, class_id) in enumerate(zip(boxes_xyxy, class_ids)):
                 x1, y1, x2, y2 = box
                 if x2 <= x1 or y2 <= y1:
                     continue
+
+                # If we have segmentation masks, save as polygon format
+                if masks is not None and i < len(masks):
+                    polygon = self._mask_to_polygon(masks[i], w, h)
+                    if polygon:
+                        f.write(f"{int(class_id)} " + " ".join(f"{p:.6f}" for p in polygon) + "\n")
+                        continue
+
+                # Fallback to bounding box format
                 x_center = ((x1 + x2) / 2.0) / w
                 y_center = ((y1 + y2) / 2.0) / h
                 bw = (x2 - x1) / w
@@ -99,10 +125,15 @@ class SegmentationCollectionEngine:
 
     def run(self) -> int:
         saved_count = 0
+        print(f"[SegEngine] Starting collection with prompts: {self.prompts}")
+        print(f"[SegEngine] Output directory: {self.output_dir}")
         frame_iter = iter_frames(self.options.input_mode, self.options.source_path)
         for frame_idx, frame in enumerate(frame_iter):
             if self.options.max_frames is not None and frame_idx >= self.options.max_frames:
                 break
+
+            if frame_idx % 30 == 0:
+                print(f"[SegEngine] Processing frame {frame_idx}, saved so far: {saved_count}")
 
             batch = self.backend.segment(frame, self.prompts)
             detections = batch.detections
@@ -110,7 +141,7 @@ class SegmentationCollectionEngine:
                 continue
 
             class_ids = self._build_labels(detections, batch.metadata)
-            self._save_one(frame, detections.xyxy, class_ids)
+            self._save_one(frame, detections.xyxy, class_ids, masks=detections.mask)
             saved_count += 1
 
             if self.crop_cfg.enabled and detections.mask is not None:
@@ -119,4 +150,5 @@ class SegmentationCollectionEngine:
                     self._save_one(crop, np.array([[0, 0, crop.shape[1] - 1, crop.shape[0] - 1]], dtype=float), np.array([0]))
                     saved_count += 1
 
+        print(f"[SegEngine] Collection complete. Total saved: {saved_count}")
         return saved_count

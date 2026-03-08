@@ -42,10 +42,12 @@ def iter_video_frames(source_path: str) -> Generator[np.ndarray, None, None]:
 def iter_realsense_frames() -> Generator[np.ndarray, None, None]:
     import pyrealsense2 as rs  # Lazy import to keep offline workflows hardware-agnostic.
 
+    print("[RealSense] Initializing camera...")
     pipeline = rs.pipeline()
     config = rs.config()
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
     pipeline.start(config)
+    print("[RealSense] Camera started. Streaming frames...")
 
     try:
         while True:
@@ -55,6 +57,7 @@ def iter_realsense_frames() -> Generator[np.ndarray, None, None]:
                 continue
             yield np.asanyarray(color_frame.get_data())
     finally:
+        print("[RealSense] Stopping camera...")
         pipeline.stop()
 
 
