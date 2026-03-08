@@ -9,6 +9,15 @@
 
 以下命令均在仓库根目录运行。
 
+### venv 快速开始
+```bash
+bash scripts/setup_venv.sh
+source .venv/bin/activate
+python -m yolo_tuning.vision_tuning.cli -h
+```
+
+完整说明：`docs/venv_setup.md`
+
 ## 配置（可选）
 `VisionConfig` 支持以下环境变量：
 - `DATASET_DIR`（检测数据集默认目录：`dataset`）

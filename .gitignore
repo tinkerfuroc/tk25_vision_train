@@ -5,6 +5,8 @@ __pycache__/
 *.pyd
 *.pyw
 *.pyz
+.venv/
+venv/
 
 # gitignore for ROS2
 build/

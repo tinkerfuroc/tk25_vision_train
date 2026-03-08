@@ -1,25 +1,30 @@
-# Core ML/CV libraries
+# Core runtime
+torch
 ultralytics
 opencv-python<=4.12.0
-numpy<2.0 # Pinned to avoid ABI issues with older libraries like tensorflow
+numpy<2.0  # Kept for legacy script compatibility.
 supervision
 pandas
 matplotlib
 PyYAML
-transformers
-
-# Dataset creation tool dependencies
-pyrealsense2
+Pillow
 python-dotenv
 thefuzz[speedup]
+transformers
+
+# Hardware and data collection
+pyrealsense2
+
+# Legacy auto-labeling stack (still used by legacy scripts)
 autodistill
 autodistill-grounding-dino
-
-# Models installed directly from GitHub
-# Using -e makes the installation "editable", which is good practice for git-based dependencies
 -e git+https://github.com/luca-medeiros/lang-segment-anything.git#egg=lang-sam
 -e git+https://github.com/facebookresearch/segment-anything.git#egg=segment_anything
 
-# Other dependencies that were discovered to be necessary during setup
+# SAM3 backend
+# Install the official SAM3 package for your environment.
+# The runtime adapter expects an importable `sam3` module.
+
+# Setup extras that are required in some environments
 flatbuffers
 hydra-core

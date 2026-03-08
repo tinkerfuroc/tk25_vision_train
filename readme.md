@@ -9,6 +9,15 @@ Utilities for RealSense data collection, YOLO dataset preparation, and YOLO11 fi
 
 All commands below are run from repo root.
 
+### venv quickstart
+```bash
+bash scripts/setup_venv.sh
+source .venv/bin/activate
+python -m yolo_tuning.vision_tuning.cli -h
+```
+
+Full guide: `docs/venv_setup.md`
+
 ## Configuration (Optional)
 Environment variables used by `VisionConfig`:
 - `DATASET_DIR` (default detection dataset: `dataset`)
