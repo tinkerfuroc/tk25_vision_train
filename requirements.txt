@@ -28,3 +28,9 @@ autodistill-grounding-dino
 # Setup extras that are required in some environments
 flatbuffers
 hydra-core
+
+#Missed dependencies
+decord
+einops
+typeguard
+pydot
