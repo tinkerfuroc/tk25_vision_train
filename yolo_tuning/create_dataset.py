@@ -81,7 +81,7 @@ class RealSenseDatasetCreator:
                     self.base_model.dino_model.device = self.device
                     print("Moved GroundingDINO model to CUDA device.")
                 except AttributeError:
-                    print("Could not move model to CUDA. It might not be supported by this version of autodistill-groundingdino.")
+                    print("Could not move model to CUDA. It might not be supported by this version of autodistill-groundingdino")
         else:
             self.base_model = None
 
