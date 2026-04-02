@@ -81,9 +81,41 @@ class OfficialSAM3Backend(SegmentationBackend):
             return (mask > 0.5).astype(bool)
         return mask
 
+    def _normalize_mask_to_image(self, mask: np.ndarray, image_shape: tuple[int, int]) -> Optional[np.ndarray]:
+        """Normalize SAM3 outputs to a single boolean mask with shape (H, W)."""
+        h, w = image_shape
+        arr = np.asarray(mask)
+
+        # Remove singleton axes first to simplify downstream shape handling.
+        arr = np.squeeze(arr)
+
+        if arr.ndim == 2:
+            pass
+        elif arr.ndim == 3:
+            # Handle channel-last masks: (H, W, C)
+            if arr.shape[:2] == (h, w) and arr.shape[2] in (1, 3, 4):
+                arr = arr[..., 0] if arr.shape[2] == 1 else np.max(arr, axis=2)
+            # Handle channel-first masks: (C, H, W)
+            elif arr.shape[1:] == (h, w) and arr.shape[0] in (1, 3, 4):
+                arr = arr[0] if arr.shape[0] == 1 else np.max(arr, axis=0)
+            else:
+                return None
+        else:
+            return None
+
+        # Some outputs may be transposed; accept and correct that case.
+        if arr.shape == (w, h):
+            arr = arr.T
+
+        if arr.shape != (h, w):
+            return None
+
+        return arr.astype(bool) if arr.dtype == np.bool_ else (arr > 0.5)
+
     def segment(self, image_bgr: np.ndarray, prompts: Iterable[str]) -> SegmentationBatch:
         """Segment using text prompts via Sam3Processor."""
-        rgb_image = image_bgr[:, :, ::-1].copy()  # BGR to RGB (copy to avoid negative strides)
+        rgb_image = image_bgr[:, :, ::-1].copy()  # BGR to RGB
+        image_shape = image_bgr.shape[:2]
 
         # Initialize state with image
         state = self.processor.set_image(rgb_image)
@@ -97,23 +129,41 @@ class OfficialSAM3Backend(SegmentationBackend):
         for prompt in prompts:
             try:
                 state = self.processor.set_text_prompt(prompt, state)
+                #print(f"[SAM3] State keys after prompt '{prompt}': {list(state.keys())}")
 
                 if "masks" in state and state["masks"] is not None:
                     # Convert tensors to float32 before numpy (BFloat16 not supported by numpy)
-                    masks = state["masks"].float().cpu().numpy()
+                    masks_tensor = state["masks"].float()
+                    masks = masks_tensor.cpu().numpy()
                     boxes = state["boxes"].float().cpu().numpy() if "boxes" in state else None
                     scores = state["scores"].float().cpu().numpy() if "scores" in state else None
 
+                    # Debug: log mask shapes
+                    #print(f"[SAM3] Raw masks tensor shape: {masks_tensor.shape}, numpy shape: {masks.shape}")
+
                     for i in range(len(masks)):
-                        all_masks.append(masks[i][0])
+                        raw_mask = masks[i]
+                        mask = self._normalize_mask_to_image(raw_mask, image_shape)
+                        if mask is None:
+                            #print(
+                            #    f"[SAM3] Warning: skipping invalid mask shape {np.asarray(raw_mask).shape} "
+                            #    f"for image shape {image_shape} (prompt='{prompt}')"
+                            #)
+                            continue
+
+                        all_masks.append(mask)
+
                         if boxes is not None and len(boxes) > i:
                             all_boxes.append(boxes[i])
                         else:
                             # Derive box from mask
-                            m = masks[i][0]
-                            ys, xs = np.where(m)
+                            ys, xs = np.where(mask)
                             if len(xs) > 0 and len(ys) > 0:
                                 all_boxes.append([xs.min(), ys.min(), xs.max(), ys.max()])
+                            else:
+                                # Keep arrays aligned for empty masks when no box is returned.
+                                all_boxes.append([0.0, 0.0, 0.0, 0.0])
+
                         if scores is not None and len(scores) > i:
                             all_scores.append(float(scores[i]))
                         else:

@@ -68,6 +68,8 @@ def run_cli(argv: Optional[list] = None) -> None:
             crop_scale_min=args.crop_scale_min,
             crop_scale_max=args.crop_scale_max,
             max_frames=args.max_frames,
+            enable_review=not args.no_review,
+            enable_live_preview=not args.no_live_preview,
         )
         return
 
@@ -90,6 +92,8 @@ def run_cli(argv: Optional[list] = None) -> None:
             crop_scale_min=args.crop_scale_min,
             crop_scale_max=args.crop_scale_max,
             max_frames=args.max_frames,
+            enable_review=not args.no_review,
+            enable_live_preview=not args.no_live_preview,
         )
         return
 

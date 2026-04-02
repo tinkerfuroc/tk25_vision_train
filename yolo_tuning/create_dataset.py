@@ -26,6 +26,39 @@ def pre_cache_tokenizer():
 # Load environment variables from .env file
 load_dotenv()
 
+
+class TkinterBBoxCollector:
+    """Tkinter-based bounding box collector with dual windows.
+
+    - Live window: real-time camera feed
+    - Review window: detections with interactive controls
+    """
+
+    def __init__(self, dataset_creator):
+        self.creator = dataset_creator
+        self.class_names = dataset_creator.ontology.classes() if dataset_creator.ontology else []
+
+        from yolo_tuning.vision_tuning.data_collection.tkinter_gui import DualWindowBBoxCollector as _DualWindowCollector
+        self._collector_class = _DualWindowCollector
+
+    def start(self):
+        self._collector = self._collector_class(
+            class_names=self.class_names,
+            on_save=self.creator.save_data,
+        )
+        self._collector.start()
+
+    def update_review(self, frame, predictions):
+        """Update review window with detection results."""
+        return self._collector.update_review(frame, predictions)
+
+    def is_alive(self):
+        return self._collector.is_alive()
+
+    def stop(self):
+        self._collector.stop()
+
+
 class RealSenseDatasetCreator:
     def __init__(self, output_dir=None, ontology_path=None, device=None):
         print("Initializing RealSenseDatasetCreator...")
@@ -50,8 +83,8 @@ class RealSenseDatasetCreator:
                 except AttributeError:
                     print("Could not move model to CUDA. It might not be supported by this version of autodistill-groundingdino.")
         else:
-            self.base_model = None 
-        
+            self.base_model = None
+
         print("Base model loaded.")
         print("Starting RealSense camera pipeline...")
 
@@ -62,9 +95,9 @@ class RealSenseDatasetCreator:
         pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
         pipeline_profile = config.resolve(pipeline_wrapper)
         device = pipeline_profile.get_device()
-        
+
         config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-        
+
         self.pipeline.start(config)
         print("RealSense camera pipeline started.")
 
@@ -88,127 +121,38 @@ class RealSenseDatasetCreator:
             return None
 
     def run(self):
-        """Main loop to capture, label, and save images."""
+        """Main loop to capture, label, and save images using Tkinter GUI."""
         if not self.base_model:
             return
 
-        print("Starting dataset creation...")
-        print("--- Image Controls ---")
-        print(" 's': Save approved detections and go to the next image.")
-        print(" 'space': Skip this image without saving.")
-        print(" 'q': Quit the application.")
-        print("--- Detection Controls ---")
-        print(" 'down arrow': Select next detection.")
-        print(" 'up arrow': Select previous detection.")
-        print(" 'd': Delete the currently selected detection.")
+        print("\nStarting dataset creation with Tkinter GUI...")
+        print("--- Controls ---")
+        print(" ↑/↓: Select detection | 'd': Delete selected | 's': Save | Space: Skip | 'q': Quit")
 
-        box_annotator = sv.BoxAnnotator(thickness=2, color=sv.ColorPalette.ROBOFLOW)
-        label_annotator = sv.LabelAnnotator(text_thickness=1, text_scale=0.5, text_position=sv.Position.BOTTOM_LEFT)
-        highlight_annotator = sv.BoxAnnotator(thickness=4, color=sv.Color.RED)
+        # Use Tkinter collector
+        collector = TkinterBBoxCollector(self)
+        collector.start()
 
         try:
-            while True:
-                # Wait for a coherent pair of frames: depth and color
+            while collector.is_alive():
+                # Wait for frames
                 frames = self.pipeline.wait_for_frames()
                 color_frame = frames.get_color_frame()
                 if not color_frame:
                     continue
 
-                # Convert images to numpy arrays
                 cv_image = np.asanyarray(color_frame.get_data())
 
-                # Define padding for display
-                pad_top, pad_bottom, pad_left, pad_right = 50, 50, 50, 50
-                border_color = [0, 0, 0]  # Black border
-
-                # Use autodistill to get predictions
+                # Get predictions (live preview is handled by GUI internally)
                 predictions = self.base_model.predict(cv_image)
 
-                if len(predictions) == 0:
-                    display_image = cv2.copyMakeBorder(cv_image, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=border_color)
-                    cv2.imshow("Image", display_image)
-                    print("No detections found. Press any key to skip, or 'q' to quit.")
-                    key = cv2.waitKeyEx(0)
-                    if key == ord('q'):
-                        print("Quitting.")
-                        break
-                    else:
-                        print("Skipped image (no detections).")
-                        continue
-                
-                # Offset predictions to match the padded image for display
-                display_predictions = copy.deepcopy(predictions)
-                display_predictions.xyxy[:, [0, 2]] += pad_left
-                display_predictions.xyxy[:, [1, 3]] += pad_top
+                # Update review window with detection results
+                if not collector.update_review(cv_image, predictions):
+                    break
 
-                kept_indices = list(range(len(predictions)))
-                selected_idx = 0
-
-                while True: # Loop for interaction on a single image
-                    # Create a padded image for display for this interaction loop
-                    display_image = cv2.copyMakeBorder(cv_image, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=border_color)
-
-                    if not kept_indices:
-                        # No detections left to show
-                        cv2.imshow("Image", display_image)
-                    else:
-                        detections_to_show = display_predictions[kept_indices]
-                        
-                        labels = [
-                            f"{self.ontology.classes()[class_id]} {confidence:0.2f}"
-                            for class_id, confidence in zip(detections_to_show.class_id, detections_to_show.confidence)
-                        ]
-                        
-                        annotated_image = box_annotator.annotate(scene=display_image, detections=detections_to_show)
-                        annotated_image = label_annotator.annotate(scene=annotated_image, detections=detections_to_show, labels=labels)
-
-                        # Highlight selected detection
-                        selected_detection = detections_to_show[selected_idx]
-                        annotated_image = highlight_annotator.annotate(scene=annotated_image, detections=selected_detection)
-                        
-                        cv2.imshow("Image", annotated_image)
-
-                    key = cv2.waitKeyEx(0)
-
-                    if key == ord('q'): # Quit
-                        self.pipeline.stop()
-                        cv2.destroyAllWindows()
-                        print("Quitting application.")
-                        return
-
-                    elif key == ord('s'): # Save
-                        if kept_indices:
-                            final_predictions = predictions[kept_indices]
-                            self.save_data(cv_image, final_predictions)
-                            print(f"Saved image with {len(final_predictions)} detections.")
-                        else:
-                            print("No detections to save.")
-                        break 
-
-                    elif key == 32: # Skip image with space bar
-                        print("Skipped image.")
-                        break 
-
-                    if not kept_indices:
-                        continue
-                    
-                    if key == 65364: # Next detection with down arrow
-                        selected_idx = (selected_idx + 1) % len(kept_indices)
-                    
-                    elif key == 65362: # Previous detection with up arrow
-                        selected_idx = (selected_idx - 1 + len(kept_indices)) % len(kept_indices)
-
-                    elif key == ord('d'): # Delete
-                        kept_indices.pop(selected_idx)
-                        if not kept_indices:
-                            print("All detections deleted.")
-                            continue
-                        if selected_idx >= len(kept_indices):
-                            selected_idx = len(kept_indices) - 1
         finally:
-            # Stop streaming
+            collector.stop()
             self.pipeline.stop()
-            cv2.destroyAllWindows()
             print("RealSense camera pipeline stopped.")
 
     def save_data(self, image, predictions):
