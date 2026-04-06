@@ -18,6 +18,7 @@ pyrealsense2
 # Legacy auto-labeling stack (still used by legacy scripts)
 autodistill
 autodistill-grounding-dino
+scikit-learn
 -e git+https://github.com/luca-medeiros/lang-segment-anything.git#egg=lang-sam
 -e git+https://github.com/facebookresearch/segment-anything.git#egg=segment_anything
 
@@ -29,7 +30,6 @@ autodistill-grounding-dino
 flatbuffers
 hydra-core
 
-#Missed dependencies
 decord
 einops
 typeguard

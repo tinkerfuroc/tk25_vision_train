@@ -21,6 +21,8 @@ class SegmentationCollector:
         crop_scale_min: float = 1.05,
         crop_scale_max: float = 1.30,
         max_frames: Optional[int] = None,
+        enable_review: bool = True,
+        enable_live_preview: bool = True,
     ):
         self.config = config
         self.output_dir = output_dir or config.seg_dataset_dir
@@ -32,6 +34,8 @@ class SegmentationCollector:
             crop_scale_min=crop_scale_min,
             crop_scale_max=crop_scale_max,
             max_frames=max_frames,
+            enable_review=enable_review,
+            enable_live_preview=enable_live_preview,
         )
 
     def run(self) -> None:
@@ -51,6 +55,8 @@ def run_seg_collection(
     crop_scale_min: float = 1.05,
     crop_scale_max: float = 1.30,
     max_frames: Optional[int] = None,
+    enable_review: bool = True,
+    enable_live_preview: bool = True,
 ) -> None:
     SegmentationCollector(
         config,
@@ -62,6 +68,8 @@ def run_seg_collection(
         crop_scale_min=crop_scale_min,
         crop_scale_max=crop_scale_max,
         max_frames=max_frames,
+        enable_review=enable_review,
+        enable_live_preview=enable_live_preview,
     ).run()
 
 

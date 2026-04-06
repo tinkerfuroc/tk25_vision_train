@@ -16,6 +16,8 @@ def _add_seg_collection_args(parser: argparse.ArgumentParser, *, default_max_fra
     parser.add_argument("--crop-scale-min", type=float, default=1.05)
     parser.add_argument("--crop-scale-max", type=float, default=1.30)
     parser.add_argument("--max-frames", type=int, default=default_max_frames)
+    parser.add_argument("--no-review", action="store_true", help="Disable GUI review and save automatically.")
+    parser.add_argument("--no-live-preview", action="store_true", help="Disable real-time visualization during collection.")
 
 
 def build_parser() -> argparse.ArgumentParser:
