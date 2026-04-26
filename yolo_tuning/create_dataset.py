@@ -2,14 +2,13 @@ import cv2
 import numpy as np
 import os
 import json
-import pyrealsense2 as rs
 from dotenv import load_dotenv
 from autodistill_grounding_dino import GroundingDINO
 from autodistill.detection import CaptionOntology
 from transformers import AutoTokenizer
 import torch
 import supervision as sv
-import copy
+import time
 
 # Pre-download the tokenizer to avoid network issues during initialization
 def pre_cache_tokenizer():
@@ -27,24 +26,27 @@ def pre_cache_tokenizer():
 load_dotenv()
 
 
-class TkinterBBoxCollector:
-    """Tkinter-based bounding box collector with dual windows.
+class WebBBoxCollector:
+    """Browser-based bounding box collector with live + review panes.
 
     - Live window: real-time camera feed
     - Review window: detections with interactive controls
     """
 
-    def __init__(self, dataset_creator):
+    def __init__(self, dataset_creator, live_frame_provider):
         self.creator = dataset_creator
         self.class_names = dataset_creator.ontology.classes() if dataset_creator.ontology else []
+        self.live_frame_provider = live_frame_provider
 
-        from yolo_tuning.vision_tuning.data_collection.tkinter_gui import DualWindowBBoxCollector as _DualWindowCollector
-        self._collector_class = _DualWindowCollector
+        from yolo_tuning.vision_tuning.data_collection.web_review import WebReviewCollector
+        self._collector_class = WebReviewCollector
 
     def start(self):
         self._collector = self._collector_class(
             class_names=self.class_names,
             on_save=self.creator.save_data,
+            mode="bbox",
+            live_frame_provider=self.live_frame_provider,
         )
         self._collector.start()
 
@@ -62,6 +64,7 @@ class TkinterBBoxCollector:
 class RealSenseDatasetCreator:
     def __init__(self, output_dir=None, ontology_path=None, device=None):
         print("Initializing RealSenseDatasetCreator...")
+        self.debug = os.getenv("BBOX_DEBUG", "").lower() in {"1", "true", "yes", "on"}
         # Determine device
         if device:
             self.device = torch.device(device)
@@ -73,12 +76,24 @@ class RealSenseDatasetCreator:
         self.ontology_path = ontology_path or os.getenv("ONTOLOGY_PATH", "resource/ontology.json")
         self.ontology = self._load_ontology()
         if self.ontology:
-            self.base_model = GroundingDINO(ontology=self.ontology)
+            box_threshold = float(os.getenv("BBOX_BOX_THRESHOLD", "0.35"))
+            text_threshold = float(os.getenv("BBOX_TEXT_THRESHOLD", "0.25"))
+            print(f"GroundingDINO thresholds: box={box_threshold}, text={text_threshold}")
+            print(f"GroundingDINO prompts: {self.ontology.prompts()}")
+            print(f"GroundingDINO classes: {self.ontology.classes()}")
+            self.base_model = GroundingDINO(
+                ontology=self.ontology,
+                box_threshold=box_threshold,
+                text_threshold=text_threshold,
+            )
             if self.device.type == 'cuda':
                 try:
                     # This attribute access is brittle and depends on autodistill-groundingdino implementation
-                    self.base_model.dino_model.model.to(self.device)
-                    self.base_model.dino_model.device = self.device
+                    dino_model = getattr(self.base_model, "grounding_dino_model", None)
+                    if dino_model is None:
+                        dino_model = self.base_model.dino_model
+                    dino_model.model.to(self.device)
+                    dino_model.device = self.device
                     print("Moved GroundingDINO model to CUDA device.")
                 except AttributeError:
                     print("Could not move model to CUDA. It might not be supported by this version of autodistill-groundingdino")
@@ -86,20 +101,9 @@ class RealSenseDatasetCreator:
             self.base_model = None
 
         print("Base model loaded.")
-        print("Starting RealSense camera pipeline...")
+        from yolo_tuning.vision_tuning.data_collection.input_sources import get_shared_camera
 
-        # Configure and start RealSense pipeline
-        self.pipeline = rs.pipeline()
-        config = rs.config()
-        # Get device product line for setting a supporting resolution
-        pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
-        pipeline_profile = config.resolve(pipeline_wrapper)
-        device = pipeline_profile.get_device()
-
-        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-
-        self.pipeline.start(config)
-        print("RealSense camera pipeline started.")
+        self.camera = get_shared_camera()
 
         # Output directory setup
         self.output_dir = output_dir or os.getenv("DATASET_DIR", "dataset")
@@ -121,39 +125,47 @@ class RealSenseDatasetCreator:
             return None
 
     def run(self):
-        """Main loop to capture, label, and save images using Tkinter GUI."""
+        """Main loop to capture, label, and save images using the web review UI."""
         if not self.base_model:
             return
 
-        print("\nStarting dataset creation with Tkinter GUI...")
+        print("\nStarting dataset creation with Web Review UI...")
         print("--- Controls ---")
         print(" ↑/↓: Select detection | 'd': Delete selected | 's': Save | Space: Skip | 'q': Quit")
 
-        # Use Tkinter collector
-        collector = TkinterBBoxCollector(self)
+        self.camera.start()
+
+        collector = WebBBoxCollector(self, live_frame_provider=self.camera.get_frame)
         collector.start()
 
         try:
             while collector.is_alive():
-                # Wait for frames
-                frames = self.pipeline.wait_for_frames()
-                color_frame = frames.get_color_frame()
-                if not color_frame:
+                cv_image = self.camera.get_frame()
+                if cv_image is None:
+                    time.sleep(0.01)
                     continue
 
-                cv_image = np.asanyarray(color_frame.get_data())
-
-                # Get predictions (live preview is handled by GUI internally)
                 predictions = self.base_model.predict(cv_image)
+                if self.debug or self.camera.get_frame_count() <= 10 or self.camera.get_frame_count() % 30 == 0:
+                    self._log_predictions(predictions)
 
-                # Update review window with detection results
                 if not collector.update_review(cv_image, predictions):
                     break
 
         finally:
             collector.stop()
-            self.pipeline.stop()
-            print("RealSense camera pipeline stopped.")
+            self.camera.stop()
+            print("RealSense camera stopped.")
+
+    def _log_predictions(self, predictions):
+        count = len(predictions)
+        print(f"[BBox] predictions={count}")
+        if count == 0:
+            return
+        xyxy = predictions.xyxy.tolist() if predictions.xyxy is not None else []
+        confidences = predictions.confidence.tolist() if predictions.confidence is not None else []
+        class_ids = predictions.class_id.tolist() if predictions.class_id is not None else []
+        print(f"[BBox] class_id={class_ids} confidence={confidences} xyxy={xyxy}")
 
     def save_data(self, image, predictions):
         """Saves the image and its corresponding YOLO format labels."""

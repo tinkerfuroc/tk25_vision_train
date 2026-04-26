@@ -14,6 +14,7 @@ from yolo_tuning.vision_tuning.data_collection.crop_augment import CropAugmentCo
 from yolo_tuning.vision_tuning.data_collection.input_sources import iter_image_folder_frames, iter_video_frames
 from yolo_tuning.vision_tuning.data_collection.seg_engine import SegEngineOptions, SegmentationCollectionEngine
 from yolo_tuning.vision_tuning.data_collection.sam3_backend import SegmentationBatch
+from yolo_tuning.vision_tuning.data_collection.web_review import WebReviewCollector
 
 
 class _FakeBackend:
@@ -80,6 +81,38 @@ class TestDataCollectionMVP(unittest.TestCase):
         crops = build_crop_variants(image, [mask], cfg)
         self.assertGreaterEqual(len(crops), 1)
         self.assertTrue(all(c.shape[0] > 0 and c.shape[1] > 0 for c in crops))
+
+    def test_web_review_delete_last_detection_clears_pending_frame(self):
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        det = sv.Detections(
+            xyxy=np.array([[8, 8, 24, 24]], dtype=float),
+            confidence=np.array([0.9]),
+            class_id=np.array([0]),
+        )
+        review = WebReviewCollector(["object"], lambda *_args: None, mode="bbox", live_frame_provider=lambda: None)
+
+        self.assertTrue(review.update_review(frame, det, det.class_id))
+        ok, message = review._handle_action("delete")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Deleted all detections")
+        self.assertFalse(review.has_pending_review())
+
+    def test_web_review_resizes_segmentation_masks_for_display(self):
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        mask = np.zeros((8, 8), dtype=bool)
+        mask[2:6, 2:6] = True
+        det = sv.Detections(
+            xyxy=np.array([[8, 8, 24, 24]], dtype=float),
+            mask=np.array([mask]),
+            confidence=np.array([0.9]),
+            class_id=np.array([0]),
+        )
+        review = WebReviewCollector(["object"], lambda *_args: None, mode="seg", live_frame_provider=lambda: None)
+
+        annotated = review._annotate_segmentation(frame, det, ["object 0.90"], selected_idx=0)
+
+        self.assertGreater(int(annotated.sum()), 0)
 
     @mock.patch("yolo_tuning.vision_tuning.data_collection.seg_engine.OfficialSAM3Backend", _FakeBackend)
     def test_segmentation_engine_writes_outputs(self):

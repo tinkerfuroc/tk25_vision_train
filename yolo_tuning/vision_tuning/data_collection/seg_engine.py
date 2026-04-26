@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -13,12 +15,7 @@ from yolo_tuning.vision_tuning.config import VisionConfig
 from yolo_tuning.vision_tuning.data_collection.crop_augment import CropAugmentConfig, build_crop_variants
 from yolo_tuning.vision_tuning.data_collection.input_sources import iter_frames
 from yolo_tuning.vision_tuning.data_collection.sam3_backend import OfficialSAM3Backend
-from yolo_tuning.vision_tuning.data_collection.tkinter_gui import DualWindowSegCollector, FrameAnnotation, FrameReviewGUI
-
-
-def _has_display() -> bool:
-    """Check if a GUI display is available."""
-    return os.environ.get("DISPLAY") is not None or os.environ.get("WAYLAND_DISPLAY") is not None
+from yolo_tuning.vision_tuning.data_collection.web_review import WebReviewCollector
 
 
 @dataclass
@@ -31,7 +28,7 @@ class SegEngineOptions:
     crop_scale_max: float = 1.30
     max_frames: Optional[int] = None
     fuzzy_threshold: int = 80
-    enable_review: bool = True  # Enable GUI review before saving
+    enable_review: bool = True  # Enable web review before saving
     enable_live_preview: bool = True  # Enable real-time visualization during collection
 
 
@@ -134,13 +131,12 @@ class SegmentationCollectionEngine:
         return np.array(class_ids, dtype=int)
 
     def _review_and_edit(self, frame_annotations: List[Tuple[np.ndarray, sv.Detections, np.ndarray]]) -> Optional[List[Tuple[np.ndarray, sv.Detections, np.ndarray]]]:
-        """Tkinter GUI for reviewing collected frames before saving."""
+        """Browser UI for reviewing collected frames before saving."""
         if not frame_annotations:
             print("[Review] No frames to review.")
             return []
 
-        # Convert to FrameAnnotation objects
-        annotations = []
+        valid_annotations = []
         for i, (image, detections, class_ids) in enumerate(frame_annotations):
             # Validate mask dimensions
             if detections.mask is not None and len(detections.mask) > 0:
@@ -150,44 +146,61 @@ class SegmentationCollectionEngine:
                     print(f"[Review] Skipping frame {i}: mask shape mismatch")
                     continue
 
-            annotations.append(FrameAnnotation(
-                image=image,
-                xyxy=detections.xyxy.copy(),
-                mask=detections.mask.copy() if detections.mask is not None else None,
-                confidence=detections.confidence.copy() if detections.confidence is not None else None,
-                class_id=class_ids.copy(),
-            ))
+            valid_annotations.append((image, detections, class_ids))
 
-        if not annotations:
+        if not valid_annotations:
             print("[Review] No valid frames to review.")
             return []
 
-        print("\n[Review] === Frame Review Mode ===")
-        print("[Review] ←/→ or j/k: Navigate | 'd': Delete frame | 's': Save all | 'q': Cancel")
+        print("\n[Review] === Web Frame Review Mode ===")
+        print("[Review] Use the browser controls to Save or Skip each collected frame.")
 
-        gui = FrameReviewGUI(self.class_names)
-        kept_indices = gui.run(annotations)
+        latest_frame: Optional[np.ndarray] = None
+        reviewed: List[Tuple[np.ndarray, sv.Detections, np.ndarray]] = []
 
-        if kept_indices is None:
-            return None
-        return [frame_annotations[i] for i in kept_indices]
+        def live_frame_provider() -> Optional[np.ndarray]:
+            return latest_frame.copy() if latest_frame is not None else None
+
+        def on_save(frame: np.ndarray, detections: sv.Detections, class_ids: np.ndarray) -> None:
+            reviewed.append((frame, detections, class_ids))
+
+        gui = WebReviewCollector(
+            class_names=self.class_names,
+            on_save=on_save,
+            mode="seg",
+            live_frame_provider=live_frame_provider,
+            port=8766,
+        )
+        gui.start()
+
+        try:
+            for image, detections, class_ids in valid_annotations:
+                if not gui.is_alive():
+                    return None
+                latest_frame = image
+                gui.update_review(image, detections, class_ids)
+                while gui.is_alive() and gui.has_pending_review():
+                    time.sleep(0.05)
+            return reviewed
+        finally:
+            gui.stop()
 
     def run(self) -> int:
         print(f"[SegEngine] Starting collection with prompts: {self.prompts}")
         print(f"[SegEngine] Output directory: {self.output_dir}")
 
-        enable_gui = self.options.enable_live_preview and _has_display()
-        if self.options.enable_live_preview and not enable_gui:
-            print("[SegEngine] No display detected. Running in headless mode.")
+        enable_gui = self.options.enable_live_preview and self.options.input_mode == "realsense"
+        latest_live_frame: Optional[np.ndarray] = None
+
+        def live_frame_provider() -> Optional[np.ndarray]:
+            return latest_live_frame.copy() if latest_live_frame is not None else None
 
         saved_count = 0
         frame_annotations: List[Tuple[np.ndarray, sv.Detections, np.ndarray]] = []
 
         if enable_gui:
-            # Interactive mode with dual-window Tkinter GUI
-            print("\n[SegEngine] === Dual-Window Collection Mode ===")
-            print("[SegEngine] Live Preview: real-time camera feed")
-            print("[SegEngine] Review Window: detections with Save/Skip controls")
+            print("\n[SegEngine] === Web Collection Mode ===")
+            print("[SegEngine] Browser UI: live frame + captured review frame")
             print("[SegEngine] Controls: 's' Save | Space Skip | 'q' Quit")
 
             def on_save(frame: np.ndarray, detections: sv.Detections, class_ids: np.ndarray):
@@ -201,9 +214,11 @@ class SegmentationCollectionEngine:
                         self._save_one(crop, np.array([[0, 0, crop.shape[1] - 1, crop.shape[0] - 1]], dtype=float), np.array([0]))
                         saved_count += 1
 
-            gui = DualWindowSegCollector(
+            gui = WebReviewCollector(
                 class_names=self.class_names,
                 on_save=on_save,
+                mode="seg",
+                live_frame_provider=live_frame_provider,
             )
             gui.start()
 
@@ -215,13 +230,13 @@ class SegmentationCollectionEngine:
                 if self.options.max_frames is not None and frame_idx >= self.options.max_frames:
                     break
 
-                # Run segmentation processing (live preview is handled by GUI internally)
+                latest_live_frame = frame.copy()
                 batch = self.backend.segment(frame, self.prompts)
                 detections = batch.detections
 
-                if frame_idx < 3:
+                if frame_idx < 10 or frame_idx % 30 == 0:
                     mask_shape = detections.mask.shape if detections.mask is not None else None
-                    print(f"[SegEngine] Frame {frame_idx}: image={frame.shape}, mask={mask_shape}")
+                    print(f"[SegEngine] Frame {frame_idx}: image={frame.shape}, detections={len(detections)}, mask={mask_shape}")
 
                 class_ids = self._build_labels(detections, batch.metadata)
 
@@ -236,7 +251,7 @@ class SegmentationCollectionEngine:
             print(f"[SegEngine] Collection complete. Total saved: {saved_count}")
             return saved_count
 
-        # Headless mode (no GUI)
+        # Non-live mode.
         frame_iter = iter_frames(self.options.input_mode, self.options.source_path)
 
         for frame_idx, frame in enumerate(frame_iter):
@@ -258,13 +273,15 @@ class SegmentationCollectionEngine:
         print(f"[SegEngine] Collection phase complete. Collected {len(frame_annotations)} frame(s).")
 
         # Review phase (if enabled)
-        if self.options.enable_review and frame_annotations:
-            print("[SegEngine] Launching review GUI...")
+        if self.options.enable_review and frame_annotations and sys.stdin.isatty():
+            print("[SegEngine] Launching web review...")
             reviewed = self._review_and_edit(frame_annotations)
             if reviewed is None:
                 print("[SegEngine] Review cancelled. No frames saved.")
                 return 0
             frame_annotations = reviewed
+        elif self.options.enable_review and frame_annotations:
+            print("[SegEngine] Non-interactive session detected. Saving collected frames without web review.")
 
         # Save frames
         for frame, detections, class_ids in frame_annotations:

@@ -11,6 +11,8 @@ Pillow
 python-dotenv
 thefuzz[speedup]
 transformers
+fastapi
+uvicorn
 
 # Hardware and data collection
 pyrealsense2

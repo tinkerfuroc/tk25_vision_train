@@ -37,6 +37,7 @@ class DualWindowBBoxCollector:
         self,
         class_names: List[str],
         on_save: Callable[[np.ndarray, sv.Detections], None],
+        pipeline: Optional[object] = None,
     ):
         self.class_names = class_names
         self.on_save = on_save
@@ -62,9 +63,10 @@ class DualWindowBBoxCollector:
         self._live_img_tk = None
         self._review_img_tk = None
 
-        # Camera for live preview
-        self._camera = None
+        # External RealSense pipeline for live preview
+        self._pipeline = pipeline
         self._live_update_id = None
+        self._frame_count_live = 0
 
         # Annotators
         self.box_annotator = sv.BoxAnnotator(thickness=2)
@@ -153,23 +155,10 @@ class DualWindowBBoxCollector:
         self.live_window.geometry("+0+0")
         self.root.geometry("+660+0")
 
-        # Start camera and live preview loop
-        self._init_camera()
+        # Start live preview loop using external pipeline
+        self._schedule_live_update()
 
         self.root.update()
-
-    def _init_camera(self) -> None:
-        """Initialize shared camera for live preview."""
-        try:
-            from yolo_tuning.vision_tuning.data_collection.input_sources import get_shared_camera
-            self._camera = get_shared_camera()
-            self._camera.start()
-            # Start live preview update loop
-            self._schedule_live_update()
-        except Exception as e:
-            print(f"[GUI] Failed to init camera: {e}")
-            if self.live_status_label:
-                self.live_status_label.config(text=f"Camera error: {e}")
 
     def _schedule_live_update(self) -> None:
         """Schedule next live preview update."""
@@ -180,28 +169,35 @@ class DualWindowBBoxCollector:
         self._live_update_id = self.root.after(33, self._schedule_live_update)
 
     def _update_live_from_camera(self) -> None:
-        """Update live preview from shared camera."""
-        if self._camera is None or self.live_canvas is None:
+        """Update live preview from RealSense pipeline."""
+        if self._pipeline is None or self.live_canvas is None:
             return
 
-        frame = self._camera.get_frame()
-        if frame is None:
-            return
+        try:
+            frames = self._pipeline.wait_for_frames(timeout_ms=100)
+            color_frame = frames.get_color_frame()
+            if not color_frame:
+                return
 
-        # Convert to RGB and create image
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(img_rgb)
-        img_tk = ImageTk.PhotoImage(image=img)
-        self._live_img_tk = img_tk  # Keep reference to prevent GC
+            frame = np.asanyarray(color_frame.get_data())
+            self._frame_count_live += 1
 
-        # Clear and draw new image
-        self.live_canvas.delete("all")
-        self.live_canvas.create_image(320, 240, anchor=tk.CENTER, image=img_tk)
+            # Convert to RGB and create image
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(img_rgb)
+            img_tk = ImageTk.PhotoImage(image=img)
+            self._live_img_tk = img_tk  # Keep reference to prevent GC
 
-        if self.live_status_label:
-            h, w = frame.shape[:2]
-            frame_count = self._camera.get_frame_count()
-            self.live_status_label.config(text=f"Live: {frame_count} | Resolution: {w}x{h}")
+            # Clear and draw new image
+            self.live_canvas.delete("all")
+            self.live_canvas.create_image(320, 240, anchor=tk.CENTER, image=img_tk)
+
+            if self.live_status_label:
+                h, w = frame.shape[:2]
+                self.live_status_label.config(text=f"Live: {self._frame_count_live} | Resolution: {w}x{h}")
+        except Exception as e:
+            # Timeout or other error - just skip this frame
+            pass
 
     def _on_close(self) -> None:
         self._closed = True
@@ -372,6 +368,7 @@ class DualWindowSegCollector:
         self,
         class_names: List[str],
         on_save: Callable[[np.ndarray, sv.Detections, np.ndarray], None],
+        pipeline: Optional[object] = None,
     ):
         self.class_names = class_names
         self.on_save = on_save
@@ -395,9 +392,10 @@ class DualWindowSegCollector:
         self._live_img_tk = None
         self._review_img_tk = None
 
-        # Camera for live preview
-        self._camera = None
+        # External RealSense pipeline for live preview
+        self._pipeline = pipeline
         self._live_update_id = None
+        self._frame_count_live = 0
 
         # Annotators
         self.mask_annotator = sv.MaskAnnotator()
@@ -478,23 +476,10 @@ class DualWindowSegCollector:
         self.live_window.geometry("+0+0")
         self.root.geometry("+660+0")
 
-        # Start camera and live preview loop
-        self._init_camera()
+        # Start live preview loop using external pipeline
+        self._schedule_live_update()
 
         self.root.update()
-
-    def _init_camera(self) -> None:
-        """Initialize shared camera for live preview."""
-        try:
-            from yolo_tuning.vision_tuning.data_collection.input_sources import get_shared_camera
-            self._camera = get_shared_camera()
-            self._camera.start()
-            # Start live preview update loop
-            self._schedule_live_update()
-        except Exception as e:
-            print(f"[GUI] Failed to init camera: {e}")
-            if self.live_status_label:
-                self.live_status_label.config(text=f"Camera error: {e}")
 
     def _schedule_live_update(self) -> None:
         """Schedule next live preview update."""
@@ -505,28 +490,35 @@ class DualWindowSegCollector:
         self._live_update_id = self.root.after(33, self._schedule_live_update)
 
     def _update_live_from_camera(self) -> None:
-        """Update live preview from shared camera."""
-        if self._camera is None or self.live_canvas is None:
+        """Update live preview from RealSense pipeline."""
+        if self._pipeline is None or self.live_canvas is None:
             return
 
-        frame = self._camera.get_frame()
-        if frame is None:
-            return
+        try:
+            frames = self._pipeline.wait_for_frames(timeout_ms=100)
+            color_frame = frames.get_color_frame()
+            if not color_frame:
+                return
 
-        # Convert to RGB and create image
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(img_rgb)
-        img_tk = ImageTk.PhotoImage(image=img)
-        self._live_img_tk = img_tk  # Keep reference to prevent GC
+            frame = np.asanyarray(color_frame.get_data())
+            self._frame_count_live += 1
 
-        # Clear and draw new image
-        self.live_canvas.delete("all")
-        self.live_canvas.create_image(320, 240, anchor=tk.CENTER, image=img_tk)
+            # Convert to RGB and create image
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(img_rgb)
+            img_tk = ImageTk.PhotoImage(image=img)
+            self._live_img_tk = img_tk  # Keep reference to prevent GC
 
-        if self.live_status_label:
-            h, w = frame.shape[:2]
-            frame_count = self._camera.get_frame_count()
-            self.live_status_label.config(text=f"Live: {frame_count} | Resolution: {w}x{h}")
+            # Clear and draw new image
+            self.live_canvas.delete("all")
+            self.live_canvas.create_image(320, 240, anchor=tk.CENTER, image=img_tk)
+
+            if self.live_status_label:
+                h, w = frame.shape[:2]
+                self.live_status_label.config(text=f"Live: {self._frame_count_live} | Resolution: {w}x{h}")
+        except Exception as e:
+            # Timeout or other error - just skip this frame
+            pass
 
     def _on_close(self) -> None:
         self._closed = True
