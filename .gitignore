@@ -29,3 +29,17 @@ runs*/
 
 sam_vit_b_01ec64.pth
 requirements_base.txt
+
+# tk_vision refactor
+.venv/
+data/
+sam3_checkpoint*/
+*.safetensors
+web/dist/
+web/node_modules/
+web/tsconfig.tsbuildinfo
+web/src/**/*.js
+web/src/**/*.d.ts
+__pycache__/
+.pytest_cache/
+*.egg-info/

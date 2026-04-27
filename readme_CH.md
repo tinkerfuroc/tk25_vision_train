@@ -1,50 +1,86 @@
-# 视觉模型微调
-用于Robocup物品识别
+# tk_vision
 
-## Requirements
-Python 3.10，安装requriements.txt中内容。
+基于 web 的 SAM3 半自动分割流水线，用于 Robocup 物品识别。从 RealSense（或图片文件夹）采集 clip，用文本 prompt 通过 SAM3 生成 mask，再用 SAM3 video tracker 沿 clip 传播；浏览器里复核与编辑；导出 YOLO-seg 数据集，训练，测试 — 全在 SPA 内完成。
 
-Download 'sam_vit_b_01ec64.pth' to '.'.
+旧版的 cv2-window 脚本（`yolo_tuning/`）仍可运行，新流程通过 `web/` + `server/` 提供。
 
-If you use the conda yml file, make sure to install LangSAM and SAM2 manually from github.
+## 依赖
 
-## 构造数据集
-目前至支持使用Realsense相机实时采样。
+- Python 3.10
+- CUDA GPU（推荐 bfloat16；测试环境 RTX 5070 Ti / sm_120, PyTorch 2.11+cu128）
+- Intel RealSense（可选 — 文件夹导入无需相机）
+- 重新构建 SPA 需要 Node 20+
 
-保存的路径在`.env`文件中修改。开始采样前确保`DATASET_DIR`文件夹为空（否则会混进前一次构造的脏数据）。
+`pip install -e ./server`（推荐，从 `pyproject.toml` 拉取 FastAPI/ultralytics/transformers/albumentations 等），或者用 `requirements.txt` 跑旧脚本。
 
-1. 在`resources/ontology.json`中输入希望识别的类和其GroudingDINO的prompt。格式为：
-    ```json
-    {"<GroudingDINO prompt>" : "label"}
-    ```
+### SAM3 权重
 
-2. 使用USB将Realsense连接到电脑。
+`sam3_checkpoint_hf/` 是从 `sam3.pt` 转换的默认 checkpoint，里面训练好的 `tracker_neck` 权重存在但前缀是 `tracker_model.tracker_neck.*` 而不是顶层 `tracker_neck.*`；`Sam3Engine.load` 启动时手动 alias。若 `tk_vision serve` 报 `tracker_neck patch loaded N/22 weights`，装一个完整 checkpoint：
 
-3. 进入`yolo_tuning`文件夹
-   conda activate visionTrain
+```
+tk_vision fetch-weights --source local
+tk_vision fetch-weights --source hf --repo facebook/sam3 --yes
+tk_vision fetch-weights --source url --url https://… --sha256 … --yes
+```
 
-4.1 Train YOLO 使用`python -m create_dataset`开始构造数据集
+`--source hf|url` 要求 `--yes`（或 `TK_VISION_ALLOW_DOWNLOAD=1`）；canary 会校验 22/22 tracker_neck 权重加载，未通过则拒绝写入目标目录。
 
-4.2 Train YOLO-seg 使用`python -m create_dataset_seg`开始构造数据集
+## 流程
 
-5.1 对于出现的每张照片，使用`上下箭头`选中不同的bounding box，并按`d`删除不正确的框。没问题后按`s`保存。如果一张图片全部错误或者没有识别出来，按`空格`跳过。
-    * 若每次的错误或漏识别都非常多，更改GroundingDINO的prompt
-    * 保存前确保没有错标的bounding box，不要污染数据源！！！
-    * 每种物品尽量在数据集中出现一百次以上。
+```
+tk_vision serve                  # FastAPI 跑在 :28000，SPA 在 http://localhost:28000
+```
 
-5.2 Press 'Space' to capture current image. Use 'Up' and 'Down' arrow keys to select different segments and 'd' to delete the selected segment. Press 'm' to enter manual mode: click on a point(s) then press 'Enter' to generate segment, if satisfied, use 'Up' and 'Down' arrow keys to select the correct label, then press 'a' to add the segment. When you are finished, press 'm' again to exit manual mode. Press 's' to save image and 'esc' to discard image.
+浏览器内：
 
-6. 标定完后按`q`结束。
+1. **Clips 页** — 录制 RealSense clip / 导入图片文件夹 / 选已有 clip。
+2. **Label 页** — `Seed first frame` 按 ontology 跑 SAM3；点 track 用正负点 refine；按 `Propagate` 用 SAM3 video tracker 沿 clip 分块前向传播。可滑动帧、用 `Delete`/`Restore`/`Prune from here` 标记坏帧、对单帧重新 seed。
+3. **Export YOLO-seg** 写入 `data/runs/<run_id>/{images,labels}/{train,val}/` + `data.yaml`；默认按 clip 切分以避免时间相邻泄漏；保留多 contour 的 polygon。
+4. **Augment** 跑 `configs/default.yaml > augment.ops` 中的 Albumentations 操作 + 可选 copy-paste，原地写出 `<stem>_aug{0..N-1}.jpg`/`.txt`。
+5. **Train** 启动 `python -m tk_vision._train_runner` 子进程跑 `model.train(...)`，stdout 通过 WebSocket 流式回传 SPA。SIGTERM 取消；成功后从 `results.csv` 写出 `metrics.json`。
+6. **Test → /test/<run_id>/<clip_id>** 输入 `.pt` 权重路径，对 clip 中所有未删除的帧跑 `model.predict`，并把预测落地为 JSON。帧滑块叠加预测多边形 + 类别分数。
 
-## 训练
-第一次使用时会从huggingface上下载初始权重，确保能连上（看看梯子）。
+### Ontology 指南
 
-1. 进入`yolo_tuning`文件夹
+`resource/ontology.json` 形如 `{prompt: label}`：
 
-2. 使用`python -m tune_YOLOv11`开始训练
-    * 训练太慢可以将第148行`model = YOLO('yolo11s.pt')`的权重名称呢该改成`yolo11n.pt`(nano)。训练很快也可以调成medium(m)，large(l)，但是s对于Robocup应该够用。
+```json
+{"<text prompt>": "<label>"}
+```
 
-3. 训练结束后将出现的`yolo_finetuned_best.pt`拷走就好。训练情况在`CHECKPOINT_DIR`文件夹中查看。
+key 喂给 SAM3 open-vocab text head，训练时见的是短名词短语（`"cat"`、`"remote"`）。key 控制在 ≤6 个 token，简洁视觉描述，避免任务术语。长 phrase 会让 `presence_logits` 塌掉，seed 返回空。value 是 YOLO class 名 — 保持稳定。
 
-## 测试训练结果
-连上realsense，进入`yolo_tuning`文件夹，使用`python -m test_new_model`即可开始实时测试新权重的识别能力。
+### Score mode
+
+`configs/default.yaml > sam3.score_mode`（或 Label 页 SPA toggle）：
+
+- `native` — Meta 默认：`score = sigmoid(pred_logits) * sigmoid(presence_logits)`。配短 prompt 用。
+- `per_query` — 去掉 presence。冗长 / 领域特定 prompt 且 `native` 不返回 mask 时用。
+
+## 配置
+
+`configs/default.yaml` 控制 server bind、采集设备、SAM3 checkpoint 路径与 dtype、propagation 分块、augment 操作、training 超参。字段说明在 `server/tk_vision/config.py`。可以 `tk_vision serve --config <path>` 或者直接改 YAML。
+
+## 后台任务模型
+
+长操作（propagate / train / infer）走统一模式：
+
+- `POST /api/.../{op}` — 启动，返回 `{job_id, ...}`，起 asyncio task。
+- `GET /api/.../{op}/{job_id}` — 查询状态。
+- `DELETE /api/.../{op}/{job_id}` — 取消（子进程 job 用 SIGTERM；进程内循环用 `cancel.set()`）。
+- `WS /ws/{op}/.../{job_id}` — 推 `log`/`frame`/`done`/`error`/`cancelled` 事件。
+
+job 状态 `pending | running | done | error | cancelled`（`JobStatus` 在 `web/src/api/rest.ts`）。
+
+## 跑测试
+
+```
+cd server
+PYTHONPATH=. python -m pytest tests/ -q --override-ini "addopts="
+```
+
+GPU smoke test (`test_propagate_smoke.py`) 与 tracker_neck patch test 需要 CUDA + 完整 SAM3 checkpoint；否则跳过。
+
+## 旧脚本 (yolo_tuning/)
+
+cv2-window 旧流程仍可用，git 中打了 `legacy/v0` tag。pre-web 的 README 见 git 历史。

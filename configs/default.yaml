@@ -1,0 +1,73 @@
+server:
+  host: 127.0.0.1
+  port: 28000
+  bind_warning: true
+  cors_origins: []
+
+project:
+  name: tk25
+  data_root: ./data
+  ontology: ./resource/ontology.json
+
+capture:
+  source: live
+  bag_path: null
+  folder_path: null
+  resolution: [640, 480]
+  fps: 30
+  max_clip_seconds: 30
+
+sam3:
+  # The Tsinghua mirror's `model.safetensors` is corrupt; we convert
+  # `sam3.pt` (Meta format) into HF format under `sam3_checkpoint_hf/` via
+  # `python /tmp/convert_sam3_video.py`. See README for the recipe.
+  model_dir: ./sam3_checkpoint_hf
+  device: cuda
+  dtype: bfloat16
+  # Higher threshold reduces false-positive candidates per ontology prompt;
+  # the open-vocab seg head is happy to fire ~5-30 low-confidence detections
+  # per image and stacked overlays then saturate the canvas. 0.45 keeps the
+  # tracks-per-frame in single digits on real RealSense captures.
+  text_threshold: 0.45
+  box_threshold: 0.4
+  # `native` keeps SAM3's presence-gated scoring (Meta default). Switch to
+  # `per_query` if the ontology uses verbose / domain-specific prompts and
+  # seed produces no detections — the SPA also has a runtime toggle.
+  score_mode: native
+
+propagate:
+  chunk_size: 50
+  chunk_overlap: 4
+  respect_edits: true
+
+label:
+  fill_hole_area: 16
+  min_area_px: 50
+  poly_epsilon: 1.5
+
+augment:
+  multiplier: 4
+  apply_to: train_only
+  ops:
+    - {name: HorizontalFlip, p: 0.5}
+    - {name: RandomBrightnessContrast, p: 0.7, brightness_limit: 0.25}
+    - {name: HueSaturationValue, p: 0.5}
+    - {name: MotionBlur, p: 0.2}
+    - {name: GaussNoise, p: 0.2}
+    - {name: Affine, p: 0.6, scale: [0.85, 1.15], translate_percent: [-0.08, 0.08], rotate: [-12, 12]}
+    - {name: CoarseDropout, p: 0.2, max_holes: 6}
+  copy_paste:
+    enabled: true
+    p: 0.3
+    pool: train_only
+    min_area_frac: 0.005
+
+train:
+  base_weights: yolo11m-seg.pt
+  epochs: 100
+  imgsz: 640
+  batch: 4
+  patience: 20
+  project_dir: ./runs
+  per_clip_split: true
+  train_ratio: 0.85
