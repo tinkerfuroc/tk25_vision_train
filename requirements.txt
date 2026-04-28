@@ -31,9 +31,7 @@ scikit-learn
 # Setup extras that are required in some environments
 flatbuffers
 hydra-core
-roboflow
 
-# Missing transitive dependencies
 decord
 einops
 typeguard
