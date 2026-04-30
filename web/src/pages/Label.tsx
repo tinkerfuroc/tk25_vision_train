@@ -173,7 +173,7 @@ export function LabelPage() {
 
   const startPropagateMut = useMutation({
     mutationFn: (start: number = 0) =>
-      api.propagate(clipId, { start, end: null, chunk_size: 50, chunk_overlap: 4, respect_edits: true }),
+      api.propagate(clipId, { start, end: null, chunk_size: 25, chunk_overlap: 4, respect_edits: true }),
     onSuccess: (res) => {
       setProp({ job_id: res.job_id, status: "ready", done: 0, total: res.total_frames, error: null });
       const ws = propagateWebSocket(clipId, res.job_id);
@@ -224,7 +224,28 @@ export function LabelPage() {
     onError: (e) => setError((e as Error).message)
   });
 
-  const [lastRunId, setLastRunId] = useState<string | null>(null);
+  // Persist lastRunId per clip to localStorage so it survives page refresh
+  const storageKey = `tk25_lastRunId_${clipId}`;
+  const [lastRunId, setLastRunId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(storageKey);
+    } catch {
+      return null;
+    }
+  });
+
+  // Fetch run details if we have a lastRunId
+  const runInfo = useQuery({
+    queryKey: ["run", lastRunId],
+    queryFn: () => api.getRun(lastRunId!),
+    enabled: !!lastRunId,
+  });
+
+  // Fetch available models for testing (don't require export first)
+  const models = useQuery({
+    queryKey: ["models"],
+    queryFn: api.models,
+  });
 
   const exportMut = useMutation({
     mutationFn: () => {
@@ -237,6 +258,7 @@ export function LabelPage() {
     },
     onSuccess: (res) => {
       setLastRunId(res.run_id);
+      try { localStorage.setItem(storageKey, res.run_id); } catch { /* ignore */ }
       setNotice(
         `Exported ${res.train_frames + res.val_frames} frames ` +
           `(${res.train_polygons + res.val_polygons} polygons) → ${res.run_dir}`
@@ -260,6 +282,14 @@ export function LabelPage() {
 
   const [train, setTrain] = useState<{ job_id: string; status: JobStatus; log: string[] } | null>(null);
   const trainWsRef = useRef<WebSocket | null>(null);
+
+  // Recover training state from API if we have a lastRunId with a trained model
+  useEffect(() => {
+    if (lastRunId && runInfo.data?.has_model && !train) {
+      // Model exists, show as "done" if not already training
+      setTrain({ job_id: "recovered", status: "done", log: [] });
+    }
+  }, [lastRunId, runInfo.data, train]);
 
   useEffect(() => {
     return () => {
@@ -447,21 +477,37 @@ export function LabelPage() {
               {startTrainMut.isPending ? "…" : `Train${lastRunId ? "" : " (export first)"}`}
             </button>
           )}
-          {lastRunId ? (
+          {lastRunId && runInfo.data?.has_model ? (
             <Link
-              to={`/test/${lastRunId}/${clipId}`}
+              to={`/test/${lastRunId}/${clipId}?weights=${encodeURIComponent(runInfo.data.weights_path || "yolo_seg_finetuned_best.pt")}`}
               className="rounded bg-teal-700 hover:bg-teal-600 px-3 py-1.5 text-sm"
-              title="Run inference replay on this clip with a trained weights file."
+              title="Run inference replay on this clip with the trained weights file."
             >
               Test →
             </Link>
+          ) : models.data?.length ? (
+            <Link
+              to={`/test/${lastRunId || "none"}/${clipId}`}
+              className="rounded bg-teal-700 hover:bg-teal-600 px-3 py-1.5 text-sm"
+              title="Run inference with any trained model (no export needed for this clip)."
+            >
+              Test →
+            </Link>
+          ) : lastRunId ? (
+            <Link
+              to={`/test/${lastRunId}/${clipId}`}
+              className="rounded bg-slate-700 hover:bg-slate-600 px-3 py-1.5 text-sm opacity-50"
+              title="No trained models found. Train a model first."
+            >
+              Test (no models)
+            </Link>
           ) : null}
-          {prop && prop.status === "running" ? (
+          {prop && (prop.status === "running" || prop.status === "ready") ? (
             <button
               onClick={() => cancelPropagateMut.mutate()}
               className="rounded bg-rose-800 hover:bg-rose-700 px-3 py-1.5 text-sm"
             >
-              Cancel ({prop.done}/{prop.total})
+              Cancel ({prop.status === "ready" ? "waiting..." : `${prop.done}/${prop.total}`})
             </button>
           ) : (
             <button
@@ -485,6 +531,20 @@ export function LabelPage() {
       {notice ? (
         <div className="rounded bg-emerald-950 border border-emerald-800 p-2 text-sm text-emerald-200">
           {notice}
+        </div>
+      ) : null}
+
+      {/* Show run status when we have a lastRunId */}
+      {lastRunId && runInfo.data ? (
+        <div className="rounded bg-slate-900 border border-slate-800 p-2 text-xs text-slate-300">
+          <div className="flex items-center justify-between">
+            <span className="font-mono">{lastRunId}</span>
+            <span className="text-slate-500">
+              {runInfo.data.train_frames + runInfo.data.val_frames} frames
+              {runInfo.data.has_augment ? " +aug" : ""}
+              {runInfo.data.has_model ? " ✓trained" : ""}
+            </span>
+          </div>
         </div>
       ) : null}
 

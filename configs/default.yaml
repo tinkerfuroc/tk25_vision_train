@@ -1,12 +1,12 @@
 server:
   host: 127.0.0.1
-  port: 28000
+  port: 28001
   bind_warning: true
   cors_origins: []
 
 project:
   name: tk25
-  data_root: ./data
+  data_root: ./data  # Clips stored in data/clips/, runs in data/runs/
   ontology: ./resource/ontology.json
 
 capture:
@@ -36,7 +36,9 @@ sam3:
   score_mode: native
 
 propagate:
-  chunk_size: 50
+  # Smaller chunks reduce GPU memory pressure. 50 frames at 1008x1008 with
+  # bfloat16 features can exhaust 8-12GB VRAM. Start with 20-25 for safety.
+  chunk_size: 25
   chunk_overlap: 4
   respect_edits: true
 
@@ -63,11 +65,11 @@ augment:
     min_area_frac: 0.005
 
 train:
-  base_weights: yolo11m-seg.pt
+  base_weights: yolo11n-seg.pt  # nano (fastest, smallest); other options: yolo11s-seg.pt, yolo11m-seg.pt, yolo11l-seg.pt
   epochs: 100
-  imgsz: 640
-  batch: 4
+  imgsz: 512    # Reduced from 640 to save VRAM
+  batch: 2      # Reduced from 4 to save VRAM (RTX 4070 has 12GB)
   patience: 20
-  project_dir: ./runs
+  project_dir: ./data/runs     # Unified with data_root/runs
   per_clip_split: true
   train_ratio: 0.85

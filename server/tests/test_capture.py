@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 
 from tk_vision.app import create_app
 from tk_vision.config import Settings
+from tk_vision.data.manifest import Clip, ClipMeta
+from tk_vision.data.persistence import ProjectStore
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -86,3 +88,52 @@ def test_record_without_realsense_fails_cleanly(tmp_path: Path) -> None:
         # records nothing) or it is installed without a device (also fine). We only assert
         # the request itself doesn't 500.
         assert r.status_code in (200, 503), r.text
+
+
+def test_list_clips_recovers_missing_meta_from_manifest(tmp_path: Path) -> None:
+    s = _settings(tmp_path)
+    store = ProjectStore(s.resolve(s.project.data_root))
+    clip_id = "legacy_clip"
+    cdir = store.clip_dir(clip_id)
+    (cdir / "frames").mkdir(parents=True, exist_ok=True)
+
+    meta = ClipMeta(
+        clip_id=clip_id,
+        source="folder",
+        bag_path=None,
+        folder_path=None,
+        fps=30.0,
+        width=64,
+        height=48,
+        frame_count=0,
+        created_at=0.0,
+        intrinsics=None,
+    )
+    store.write_clip(Clip(**meta.model_dump()))
+    meta_path = cdir / "meta.json"
+    if meta_path.exists():
+        meta_path.unlink()
+
+    with TestClient(create_app(s, load_sam3=False)) as c:
+        r = c.get("/api/clips")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert any(x["clip_id"] == clip_id for x in body)
+
+    assert meta_path.is_file()
+
+
+def test_list_clips_skips_malformed_meta(tmp_path: Path) -> None:
+    s = _settings(tmp_path)
+    store = ProjectStore(s.resolve(s.project.data_root))
+    clip_id = "broken_clip"
+    cdir = store.clip_dir(clip_id)
+    cdir.mkdir(parents=True, exist_ok=True)
+    # Malformed JSON simulates interrupted writes / legacy bad data.
+    (cdir / "meta.json").write_text("{not-json")
+
+    with TestClient(create_app(s, load_sam3=False)) as c:
+        r = c.get("/api/clips")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert all(x["clip_id"] != clip_id for x in body)

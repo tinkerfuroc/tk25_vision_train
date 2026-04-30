@@ -70,7 +70,7 @@ Long operations (propagate, train, infer) follow a uniform pattern:
 - `DELETE /api/.../{op}/{job_id}` — cancel (SIGTERM for subprocess jobs, `cancel.set()` for in-process loops).
 - `WS /ws/{op}/.../{job_id}` — stream `log`/`frame`/`done`/`error`/`cancelled` events.
 
-Job status is one of `pending | running | done | error | cancelled` (`JobStatus` in `web/src/api/rest.ts`).
+Job status is one of `pending | running | done | error | cancelled` (`JobStatus` in `web/src/api/rest.ts`).pip install "httpx[socks]"
 
 ## Running tests
 

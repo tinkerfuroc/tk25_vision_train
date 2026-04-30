@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 from ..data.manifest import ClipMeta
 
 router = APIRouter(prefix="/api/clips", tags=["clips"])
+log = logging.getLogger("tk_vision.api.clips")
 
 
 class ClipSummary(BaseModel):
@@ -42,7 +44,16 @@ async def list_clips(request: Request) -> list[ClipSummary]:
     store = request.app.state.store
     out: list[ClipSummary] = []
     for cid in store.list_clip_ids():
-        meta = store.read_meta(cid)
+        try:
+            meta = store.read_meta(cid)
+        except FileNotFoundError:
+            log.warning("Skipping clip without metadata: %s", cid)
+            continue
+        except ValueError as e:
+            # Corrupt manifests / invalid clip metadata should not break
+            # listing of all clips.
+            log.warning("Skipping malformed clip %s: %s", cid, e)
+            continue
         out.append(ClipSummary(**meta.model_dump()))
     return out
 

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { api } from "./api/rest";
 import { ClipsPage } from "./pages/Clips";
+import { DatasetsPage } from "./pages/Datasets";
 import { LabelPage } from "./pages/Label";
 import { TestPage } from "./pages/Test";
 
@@ -16,6 +17,7 @@ export function App() {
             tk_vision
           </Link>
           <div className="text-xs text-slate-400 flex gap-4">
+            <Link to="/datasets" className="hover:text-slate-200">Datasets</Link>
             <span>v{health.data?.version ?? "…"}</span>
             <span>
               sam3:{" "}
@@ -37,8 +39,11 @@ export function App() {
         <main className="flex-1">
           <Routes>
             <Route path="/" element={<ClipsPage />} />
+            <Route path="/datasets" element={<DatasetsPage />} />
             <Route path="/label/:clipId" element={<LabelPage />} />
             <Route path="/test/:runId/:clipId" element={<TestPage />} />
+            <Route path="/test/:runId" element={<TestPage />} />
+            <Route path="/test" element={<TestPage />} />
           </Routes>
         </main>
       </div>

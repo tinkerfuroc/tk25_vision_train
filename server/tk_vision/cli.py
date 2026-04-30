@@ -100,6 +100,8 @@ def _fetch_weights_cli(args) -> int:  # noqa: ANN001
         )
         return 2
 
+    _normalize_proxy_env_for_httpx()
+
     if src == "local":
         if not (dest / "model.safetensors").is_file():
             print(f"error: {dest}/model.safetensors not found.", file=sys.stderr)
@@ -121,7 +123,6 @@ def _fetch_weights_cli(args) -> int:  # noqa: ANN001
         snapshot_download(
             repo_id=args.repo,
             local_dir=str(staging),
-            local_dir_use_symlinks=False,
         )
         _atomic_install(staging, dest)
     elif src == "url":
@@ -144,6 +145,35 @@ def _check_dest_writable(dest, force: bool) -> bool:
         print(f"error: {dest} is not empty. Pass --force to overwrite.", file=sys.stderr)
         return False
     return True
+
+
+def _normalize_proxy_env_for_httpx() -> None:
+    """Normalize proxy env vars so httpx accepts SOCKS proxies.
+
+    Some environments export `socks://...`, but httpx expects
+    `socks5://...` (or `socks5h://...`). Rewrite in-process so
+    `snapshot_download()` can initialize its HTTP client.
+    """
+    import os
+
+    keys = (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    )
+    for key in keys:
+        value = os.environ.get(key)
+        if not value:
+            continue
+        if value.startswith("socks://"):
+            os.environ[key] = "socks5://" + value[len("socks://") :]
+            print(
+                f"warning: normalized {key}=socks://... to socks5://... for httpx compatibility",
+                file=sys.stderr,
+            )
 
 
 def _staging_dir(dest) -> "Path":

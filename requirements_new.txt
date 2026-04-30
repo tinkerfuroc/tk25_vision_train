@@ -23,7 +23,8 @@ annotated-types==0.7.0
 anygrasp_ros2==0.0.0
 anyio==4.13.0
 # Editable install with no version control (approach-planner==0.1.0)
--e /home/tinker/tk25_ws/build/approach_planner
+# Local editable path from another machine; install manually if needed:
+# pip install -e /home/tinker/tk25_ws/build/approach_planner
 arm-api==0.0.0
 audio_pakage==0.0.0
 backports.asyncio.runner==1.2.0
@@ -148,9 +149,11 @@ nvidia-nvjitlink-cu12==12.8.93
 nvidia-nvshmem-cu12==3.4.5
 nvidia-nvtx-cu12==12.8.90
 # Editable install with no version control (object-detection-generalist==0.1.0)
--e /home/tinker/tk25_ws/build/object_detection_generalist
+# Local editable path from another machine; install manually if needed:
+# pip install -e /home/tinker/tk25_ws/build/object_detection_generalist
 # Editable install with no version control (object-detection-new==0.0.1)
--e /home/tinker/tk25_ws/build/object_detection_new
+# Local editable path from another machine; install manually if needed:
+# pip install -e /home/tinker/tk25_ws/build/object_detection_new
 object-recognition-msgs==2.0.0
 octomap-msgs==2.0.1
 opencv-python==4.11.0.86
@@ -282,7 +285,9 @@ tinker-nav-msgs==0.0.0
 tinker_arm_msgs==0.0.0
 tinker_audio_msgs==0.0.0
 tinker_vision_msgs_26==0.1.0
--e git+ssh://git@github-vision/tinkerfuroc/tk25_vision_train.git@5217a1b447f33c4b483093ee5f22cc3377d1b06a#egg=tk_vision
+# Private host github-vision may be unreachable in this environment.
+# Use the local workspace package instead:
+-e .
 tk_vision_specialized==0.1.0
 tokenizers==0.22.2
 tomli==2.4.1
@@ -307,7 +312,8 @@ urllib3==2.6.3
 uvicorn==0.46.0
 uvloop==0.22.1
 # Editable install with no version control (vision-util==0.0.1)
--e /home/tinker/tk25_ws/build/vision_util
+# Local editable path from another machine; install manually if needed:
+# pip install -e /home/tinker/tk25_ws/build/vision_util
 vision_track==0.0.0
 visualization-msgs==4.9.1
 vla==0.0.0

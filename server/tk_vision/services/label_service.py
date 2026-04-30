@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from ..annotate.chunker import chunk_frames
-from ..annotate.sam3 import Detection, Sam3Engine, is_degenerate_mask
+from ..annotate.sam3 import ChunkOOMError, Detection, Sam3Engine, is_degenerate_mask
 from ..data.manifest import Clip, Mask, MaskSource, Track
 from ..data.persistence import (
     ProjectStore,
@@ -136,10 +136,18 @@ class LabelService:
         labels = list(ontology.values())
 
         target: Track | None = None
+        ref_mask: np.ndarray | None = None
         if track_id is not None:
             target = get_track(clip, track_id)
             if target is None:
                 raise KeyError(f"Track {track_id} not found in clip {clip_id}")
+            # Load existing mask if present on this frame — enables negative-only refinement
+            if frame_idx in target.masks:
+                try:
+                    ref_mask = read_mask(mask_path_for(self.store.clip_dir(clip_id), track_id, frame_idx))
+                    log.debug("refine_frame: loaded ref_mask for track %d frame %d", track_id, frame_idx)
+                except FileNotFoundError:
+                    log.warning("refine_frame: mask file missing for track %d frame %d", track_id, frame_idx)
         else:
             if class_id is None and label is None:
                 raise ValueError("New track requires class_id or label")
@@ -158,25 +166,42 @@ class LabelService:
         image = await loop.run_in_executor(None, self._read_frame, clip_id, frame_idx)
         frame_key = (clip_id, frame_idx)
         cdir = self.store.clip_dir(clip_id)
+        prompt = target.label or ""
 
         if points:
+            # Determine if this is a negative-only refinement
+            positive_pts = [p for p in points if p[2] == 1]
+            negative_pts = [p for p in points if p[2] == 0]
+            if not positive_pts and negative_pts and ref_mask is None:
+                raise ValueError(
+                    "Negative-only refinement requires an existing mask. "
+                    "Click on the object first (positive point), or select a track that has a mask on this frame."
+                )
             det = await loop.run_in_executor(
                 None,
                 lambda: self.sam3.predict_clicks(
-                    image, points=points, frame_key=frame_key
+                    image, points=points, prompt=prompt, ref_mask=ref_mask, frame_key=frame_key
                 ),
             )
         elif box is not None:
             det = await loop.run_in_executor(
                 None,
                 lambda: self.sam3.predict_box(
-                    image, box, prompt=target.label or "", frame_key=frame_key
+                    image, box, prompt=prompt, frame_key=frame_key
                 ),
             )
         else:
             raise ValueError("refine_frame requires `points` or `box`")
         if det is None:
-            raise ValueError("SAM3 returned no segmentation for this prompt")
+            if points and not positive_pts:
+                raise ValueError(
+                    "SAM3 could not generate a mask from negative points. "
+                    "The reference mask may have been too small or the negative regions covered too much of it."
+                )
+            raise ValueError(
+                f"SAM3 returned no segmentation for this prompt. "
+                f"Try clicking closer to the center of the object, or use a different prompt."
+            )
 
         mask_p = mask_path_for(cdir, target.track_id, frame_idx)
         await loop.run_in_executor(None, write_mask, mask_p, det.mask)
@@ -378,6 +403,12 @@ class LabelService:
                                 "source": source,
                             }
                         )
+            except ChunkOOMError as e:
+                log.error("propagate_clip: CUDA OOM at chunk start=%d: %s", chunk.start, e)
+                raise RuntimeError(
+                    f"CUDA out of memory during propagation at frame {chunk.start}. "
+                    f"Try reducing chunk_size (current: {chunk_size}) in the propagate request."
+                ) from e
             except Exception as e:  # noqa: BLE001
                 log.exception("propagate_clip chunk failed at start=%d: %s", chunk.start, e)
                 raise
@@ -397,15 +428,32 @@ class LabelService:
         """Wrap `Sam3Engine.propagate_video` (a synchronous generator) into
         an async iterator. Each `next()` runs in the default executor so the
         event loop continues processing cancel signals."""
-        gen = self.sam3.propagate_video(
-            frames=frames, seed_masks=seed_masks, cancel_cb=cancel_cb
-        )
-        sentinel = object()
-        while True:
-            value = await loop.run_in_executor(None, lambda g=gen: next(g, sentinel))
-            if value is sentinel:
-                return
-            yield value
+        log.info("_aiter_propagate: starting with %d frames, %d seed masks", len(frames), len(seed_masks))
+
+        # Run the entire propagate_video in executor to avoid blocking
+        def run_propagate():
+            try:
+                gen = self.sam3.propagate_video(
+                    frames=frames, seed_masks=seed_masks, cancel_cb=cancel_cb
+                )
+                results = []
+                for offset, masks in gen:
+                    results.append((offset, masks))
+                    if cancel_cb and cancel_cb():
+                        break
+                return results
+            except Exception as e:
+                log.exception("run_propagate error: %s", e)
+                raise
+
+        try:
+            results = await loop.run_in_executor(None, run_propagate)
+            log.info("_aiter_propagate: got %d results", len(results))
+            for offset, masks in results:
+                yield offset, masks
+        except Exception as e:
+            log.error("_aiter_propagate: error: %s", e)
+            raise
 
     @staticmethod
     def _best_anchor_frame(track: Track, frame_idx: int) -> int | None:

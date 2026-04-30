@@ -9,6 +9,7 @@ from typing import Iterator, Literal, Optional, Callable
 
 import numpy as np
 import torch
+from scipy.ndimage import binary_dilation
 
 log = logging.getLogger("tk_vision.sam3")
 
@@ -262,29 +263,108 @@ class Sam3Engine:
         image_bgr: np.ndarray,
         *,
         points: list[tuple[int, int, int]],
+        prompt: str = "",
+        ref_mask: np.ndarray | None = None,
         frame_key: tuple | None = None,
     ) -> Detection | None:
-        """Click-prompted refinement (stop-gap).
+        """Click-prompted refinement.
 
-        TODO(PR4): use Sam3TrackerModel with point/mask prompts once the
-        converter populates `tracker_neck.fpn_layers.*`. Until then we collapse
-        positive clicks into their tight bounding box and route through
-        `predict_box`, which uses the detector path (fully-populated weights).
+        If positive points exist: collapse them into a bounding box (with 12px
+        padding) and route through predict_box.
+
+        If only negative points: require ref_mask (existing mask to refine).
+        Compute box from ref_mask, then apply mask subtraction after prediction.
+
+        The prompt defaults to "." (generic) but should be the track's label
+        when refining an existing track — helps SAM3 localize the object.
         """
         positive = [(x, y) for x, y, lbl in points if int(lbl) == 1]
-        if not positive:
-            return None
-        xs = [int(x) for x, _ in positive]
-        ys = [int(y) for _, y in positive]
-        pad = 12
+        negative = [(x, y) for x, y, lbl in points if int(lbl) == 0]
         h, w = image_bgr.shape[:2]
-        box = (
-            max(0, min(xs) - pad),
-            max(0, min(ys) - pad),
-            min(w, max(xs) + pad),
-            min(h, max(ys) + pad),
-        )
-        return self.predict_box(image_bgr, box, prompt="", frame_key=frame_key)
+
+        if not positive and not negative:
+            return None
+
+        # Case 1: Positive points exist — box around them
+        if positive:
+            xs = [int(x) for x, _ in positive]
+            ys = [int(y) for _, y in positive]
+            pad = 12
+            box = (
+                max(0, min(xs) - pad),
+                max(0, min(ys) - pad),
+                min(w, max(xs) + pad),
+                min(h, max(ys) + pad),
+            )
+            det = self.predict_box(image_bgr, box, prompt=prompt or ".", frame_key=frame_key)
+            if det is None:
+                return None
+            # Apply negative points: zero out mask regions under negative clicks
+            if negative and det is not None:
+                mask = det.mask.copy()
+                neg_radius = 20  # pixels to zero out around each negative click
+                for nx, ny in negative:
+                    y_start = max(0, ny - neg_radius)
+                    y_end = min(h, ny + neg_radius)
+                    x_start = max(0, nx - neg_radius)
+                    x_end = min(w, nx + neg_radius)
+                    mask[y_start:y_end, x_start:x_end] = False
+                # Reject if mask becomes too small after subtraction
+                if mask.sum() < self.MIN_MASK_AREA_PX:
+                    return None
+                det = Detection(
+                    mask=mask,
+                    bbox=det.bbox,
+                    score=det.score,
+                    phrase=det.phrase,
+                )
+            return det
+
+        # Case 2: Only negative points — need existing mask as reference
+        if not positive and negative:
+            if ref_mask is None:
+                log.warning("predict_clicks: negative-only prompt requires ref_mask")
+                return None
+            # Compute bounding box from existing mask
+            ys, xs = np.where(ref_mask)
+            if len(xs) == 0 or len(ys) == 0:
+                return None  # Empty reference mask
+            pad = 16
+            box = (
+                max(0, int(xs.min()) - pad),
+                max(0, int(ys.min()) - pad),
+                min(w, int(xs.max()) + pad),
+                min(h, int(ys.max()) + pad),
+            )
+            det = self.predict_box(image_bgr, box, prompt=prompt or ".", frame_key=frame_key)
+            if det is None:
+                return None
+            # Apply negative points to exclude regions
+            mask = det.mask.copy()
+            neg_radius = 25  # larger radius for negative-only refinement
+            for nx, ny in negative:
+                y_start = max(0, ny - neg_radius)
+                y_end = min(h, ny + neg_radius)
+                x_start = max(0, nx - neg_radius)
+                x_end = min(w, nx + neg_radius)
+                mask[y_start:y_end, x_start:x_end] = False
+            # Also exclude regions outside original ref_mask boundary
+            # (keeps the mask roughly within the original object bounds)
+            # Grow ref_mask slightly to allow some expansion, then intersect
+            kernel = np.ones((15, 15), dtype=bool)
+            expanded_ref = binary_dilation(ref_mask, structure=kernel)
+            mask = mask & expanded_ref
+            if mask.sum() < self.MIN_MASK_AREA_PX:
+                return None
+            # Recompute bbox from final mask
+            ys, xs = np.where(mask)
+            bbox = (int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1))
+            return Detection(
+                mask=mask,
+                bbox=bbox,
+                score=det.score,
+                phrase=det.phrase,
+            )
 
     def _ensure_loaded(self) -> None:
         if self._model is None:
@@ -315,23 +395,40 @@ class Sam3Engine:
 
         Raises ``ChunkOOMError`` on CUDA OOM.
         """
-        from transformers.models.sam3_tracker_video.modeling_sam3_tracker_video import (
-            Sam3TrackerVideoInferenceSession,
-        )
+        try:
+            from transformers.models.sam3_tracker_video.modeling_sam3_tracker_video import (
+                Sam3TrackerVideoInferenceSession,
+            )
+        except ImportError as e:
+            log.error("propagate_video: failed to import Sam3TrackerVideoInferenceSession: %s", e)
+            raise RuntimeError(
+                "SAM3 video tracking requires transformers with Sam3TrackerVideo support. "
+                "Ensure you have the correct version installed."
+            ) from e
 
         if not frames:
+            log.warning("propagate_video: no frames provided")
             return
         if not seed_masks:
             raise ValueError("seed_masks must be non-empty")
+
+        log.info("propagate_video: starting with %d frames, %d seed masks", len(frames), len(seed_masks))
         self._ensure_loaded()
 
         h_full, w_full = frames[0].shape[:2]
         n_frames = len(frames)
+        log.info("propagate_video: frame size %dx%d, %d frames", w_full, h_full, n_frames)
 
         # Preprocess all frames in one HF processor call → (T, 3, 1008, 1008).
+        log.debug("propagate_video: preprocessing frames...")
         rgb_frames = [np.ascontiguousarray(f[:, :, ::-1]) for f in frames]
-        inputs = self._processor(images=rgb_frames, return_tensors="pt")
+        try:
+            inputs = self._processor(images=rgb_frames, return_tensors="pt")
+        except Exception as e:
+            log.error("propagate_video: processor failed: %s", e)
+            raise
         video = inputs["pixel_values"]  # already (T, 3, 1008, 1008)
+        log.debug("propagate_video: video tensor shape %s", video.shape)
 
         try:
             with self._lock:
@@ -345,9 +442,13 @@ class Sam3Engine:
                     cancel_cb,
                 )
         except torch.cuda.OutOfMemoryError as e:
+            log.error("propagate_video: CUDA OOM: %s", e)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             raise ChunkOOMError(str(e)) from e
+        except Exception as e:
+            log.exception("propagate_video: unexpected error: %s", e)
+            raise
         finally:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -362,38 +463,65 @@ class Sam3Engine:
         n_frames: int,
         cancel_cb: Optional[Callable[[], bool]],
     ) -> Iterator[tuple[int, dict[int, np.ndarray]]]:
+        log.info("_propagate_locked: creating session for %d frames", n_frames)
         with torch.inference_mode(), torch.autocast(
             self.device, dtype=self.torch_dtype
         ):
-            session = SessionCls(
-                video=video,
-                video_height=h_full,
-                video_width=w_full,
-                inference_device=self.device,
-                inference_state_device="cpu",
-                video_storage_device=self.device,
-                dtype=self.torch_dtype,
-                # Cache all chunk frames so the tracker's per-frame lookup
-                # never falls through to the (removed) vision_encoder.
-                max_vision_features_cache_size=max(n_frames, 1),
-            )
+            try:
+                session = SessionCls(
+                    video=video,
+                    video_height=h_full,
+                    video_width=w_full,
+                    inference_device=self.device,
+                    inference_state_device="cpu",
+                    video_storage_device=self.device,
+                    dtype=self.torch_dtype,
+                    # Cache all chunk frames so the tracker's per-frame lookup
+                    # never falls through to the (removed) vision_encoder.
+                    max_vision_features_cache_size=max(n_frames, 1),
+                )
+            except Exception as e:
+                log.exception("_propagate_locked: failed to create session: %s", e)
+                raise
 
             # Pre-compute vision features for every frame and seed the cache.
+            log.info("_propagate_locked: computing vision features for %d frames", n_frames)
             for fr in range(n_frames):
-                px = session.get_frame(fr).unsqueeze(0)  # (1, 3, 1008, 1008)
-                vision_embeds = self._model.detector_model.get_vision_features(
-                    pixel_values=px
-                )
-                feats, pos = self._model.get_vision_features_for_tracker(
-                    vision_embeds=vision_embeds
-                )
-                session.cache.cache_vision_features(
-                    fr, {"vision_feats": feats, "vision_pos_embeds": pos}
-                )
+                try:
+                    px = session.get_frame(fr).unsqueeze(0)  # (1, 3, 1008, 1008)
+                    vision_embeds = self._model.detector_model.get_vision_features(
+                        pixel_values=px
+                    )
+                    feats, pos = self._model.get_vision_features_for_tracker(
+                        vision_embeds=vision_embeds
+                    )
+                    session.cache.cache_vision_features(
+                        fr, {"vision_feats": feats, "vision_pos_embeds": pos}
+                    )
+                    # Log GPU memory every 10 frames to help diagnose OOM
+                    if fr % 10 == 9 and torch.cuda.is_available():
+                        allocated = torch.cuda.memory_allocated() / 1e9
+                        reserved = torch.cuda.memory_reserved() / 1e9
+                        log.debug("_propagate_locked: frame %d, GPU mem: %.2f GB allocated, %.2f GB reserved", fr + 1, allocated, reserved)
+                except RuntimeError as e:
+                    if "CUDA" in str(e) or "out of memory" in str(e).lower():
+                        log.error("_propagate_locked: CUDA OOM at frame %d/%d. Try reducing chunk_size.", fr, n_frames)
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        raise ChunkOOMError(
+                            f"CUDA OOM while computing vision features at frame {fr}/{n_frames}. "
+                            f"Reduce chunk_size (current chunk has {n_frames} frames)."
+                        ) from e
+                    raise
+                except Exception as e:
+                    log.exception("_propagate_locked: failed at frame %d: %s", fr, e)
+                    raise
+            log.info("_propagate_locked: vision features cached")
 
             # Register each seeded track as an object with its anchor mask
             # at frame 0. Mask is upsampled internally by the tracker's
             # prompt encoder to mask_input_size, so we pass at native res.
+            log.info("_propagate_locked: registering %d seed masks", len(seed_masks))
             for track_id, mask in seed_masks.items():
                 if mask.shape != (h_full, w_full):
                     raise ValueError(
@@ -409,6 +537,7 @@ class Sam3Engine:
                 )
                 session.add_mask_inputs(obj_idx, 0, m_t)
             session.obj_with_new_inputs = [int(t) for t in seed_masks.keys()]
+            log.info("_propagate_locked: starting tracker iteration")
 
             tracker = self._model.tracker_model
             yield from self._iter_tracker(
@@ -425,35 +554,48 @@ class Sam3Engine:
     ) -> Iterator[tuple[int, dict[int, np.ndarray]]]:
         h_full, w_full = target_size
 
-        for out in tracker.propagate_in_video_iterator(
-            inference_session=session,
-            start_frame_idx=0,
-            max_frame_num_to_track=n_frames,
-        ):
-            if cancel_cb is not None and cancel_cb():
-                break
-            offset = int(out.frame_idx)
-            masks_out: dict[int, np.ndarray] = {}
-            pred = out.pred_masks  # (num_obj, 1, h_low, w_low) float
-            obj_ids = out.obj_ids if hasattr(out, "obj_ids") else session.obj_ids
-            if pred is None or len(pred) == 0:
-                yield offset, masks_out
-                continue
-            full = torch.nn.functional.interpolate(
-                pred.to(torch.float32),
-                size=(h_full, w_full),
-                mode="bilinear",
-                align_corners=False,
-            )  # (num_obj, 1, H, W)
-            bin_masks = (full.sigmoid() > self.MASK_THRESHOLD).cpu().numpy()
-            for i, obj_id in enumerate(obj_ids):
-                m = bin_masks[i, 0]
-                if is_degenerate_mask(
-                    m, max_area_frac=self.MAX_MASK_AREA_FRAC, min_area_px=self.MIN_MASK_AREA_PX
-                ):
+        try:
+            for out in tracker.propagate_in_video_iterator(
+                inference_session=session,
+                start_frame_idx=0,
+                max_frame_num_to_track=n_frames,
+            ):
+                if cancel_cb is not None and cancel_cb():
+                    break
+                offset = int(out.frame_idx)
+                masks_out: dict[int, np.ndarray] = {}
+                pred = out.pred_masks  # (num_obj, 1, h_low, w_low) float
+                obj_ids = out.obj_ids if hasattr(out, "obj_ids") else session.obj_ids
+                if pred is None or len(pred) == 0:
+                    yield offset, masks_out
                     continue
-                masks_out[int(obj_id)] = m
-            yield offset, masks_out
+                full = torch.nn.functional.interpolate(
+                    pred.to(torch.float32),
+                    size=(h_full, w_full),
+                    mode="bilinear",
+                    align_corners=False,
+                )  # (num_obj, 1, H, W)
+                bin_masks = (full.sigmoid() > self.MASK_THRESHOLD).cpu().numpy()
+                for i, obj_id in enumerate(obj_ids):
+                    m = bin_masks[i, 0]
+                    if is_degenerate_mask(
+                        m, max_area_frac=self.MAX_MASK_AREA_FRAC, min_area_px=self.MIN_MASK_AREA_PX
+                    ):
+                        continue
+                    masks_out[int(obj_id)] = m
+                yield offset, masks_out
+        except RuntimeError as e:
+            # CUDA errors often manifest as RuntimeError
+            if "CUDA" in str(e) or "out of memory" in str(e).lower():
+                log.error("_iter_tracker: CUDA error: %s", e)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                raise ChunkOOMError(str(e)) from e
+            log.exception("_iter_tracker: runtime error: %s", e)
+            raise
+        except Exception as e:
+            log.exception("_iter_tracker: unexpected error: %s", e)
+            raise
 
     def _tokenize(self, text: str) -> dict[str, "torch.Tensor"]:
         enc = self._processor.tokenizer(

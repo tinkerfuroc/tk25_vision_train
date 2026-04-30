@@ -38,7 +38,7 @@ class PropagateJob:
 class PropagateRequest(BaseModel):
     start: int = 0
     end: Optional[int] = None
-    chunk_size: int = 50
+    chunk_size: int = 25  # Reduced from 50 to avoid CUDA OOM
     chunk_overlap: int = 4
     respect_edits: bool = True
 
@@ -70,22 +70,48 @@ async def start_propagate(
     if not clip.tracks:
         raise HTTPException(400, "clip has no tracks; seed first")
 
+    # Enforce max chunk_size to prevent CUDA OOM
+    # 50 frames at 1008x1008 bfloat16 can exhaust 8-12GB VRAM
+    MAX_CHUNK_SIZE = 20
+    chunk_size = min(payload.chunk_size, MAX_CHUNK_SIZE)
+    if chunk_size != payload.chunk_size:
+        log.warning(
+            "propagate: chunk_size %d exceeds max %d, reducing",
+            payload.chunk_size, MAX_CHUNK_SIZE
+        )
+
     jobs = _jobs(request)
+
+    # Check for existing running job for this clip - prevent concurrent propagates
+    for existing_job in jobs.values():
+        if existing_job.clip_id == clip_id and existing_job.status in ("pending", "running"):
+            raise HTTPException(
+                409,
+                f"Propagate job {existing_job.job_id} already running for clip {clip_id}. "
+                f"Wait for it to complete or cancel it first."
+            )
+
     job = PropagateJob(
         job_id=uuid.uuid4().hex[:8],
         clip_id=clip_id,
         start=payload.start,
         end=end,
-        chunk_size=payload.chunk_size,
+        chunk_size=chunk_size,
         chunk_overlap=payload.chunk_overlap,
         respect_edits=payload.respect_edits,
         total_frames=end - payload.start,
     )
     jobs[job.job_id] = job
+    log.info("Created propagate job %s for clip %s (%d frames)", job.job_id, clip_id, job.total_frames)
 
     async def progress_cb(evt: dict) -> None:
         if evt.get("event") == "frame" and "done" in evt:
             job.done_frames = evt["done"]
+            log.debug("propagate %s: frame %d/%d", job.job_id, job.done_frames, job.total_frames)
+        elif evt.get("event") == "chunk_done":
+            log.info("propagate %s: chunk done at frame %d", job.job_id, evt.get("chunk_end"))
+        elif evt.get("event") == "chunk_skipped":
+            log.warning("propagate %s: chunk skipped at %d: %s", job.job_id, evt.get("chunk_start"), evt.get("reason"))
         try:
             job.progress.put_nowait(evt)
         except asyncio.QueueFull:
@@ -101,20 +127,22 @@ async def start_propagate(
 
     async def runner() -> None:
         job.status = "running"
+        log.info("propagate job %s started (chunk_size=%d)", job.job_id, chunk_size)
         try:
             await svc.propagate_clip(
                 clip_id,
                 start=payload.start,
                 end=end,
-                chunk_size=payload.chunk_size,
+                chunk_size=chunk_size,
                 chunk_overlap=payload.chunk_overlap,
                 respect_edits=payload.respect_edits,
                 progress_cb=progress_cb,
                 cancel_cb=lambda: job.cancel.is_set(),
             )
             job.status = "cancelled" if job.cancel.is_set() else "done"
+            log.info("propagate job %s completed: %s", job.job_id, job.status)
         except Exception as e:  # noqa: BLE001
-            log.exception("propagate job %s failed", job.job_id)
+            log.exception("propagate job %s failed: %s", job.job_id, e)
             job.status = "error"
             job.error = str(e)
         finally:
@@ -123,7 +151,17 @@ async def start_propagate(
             except Exception:
                 pass
 
+    def _log_task_exception(task: asyncio.Task) -> None:
+        """Log any exception from the background propagate task."""
+        try:
+            exc = task.exception()
+            if exc:
+                log.exception("propagate task %s crashed: %s", job.job_id, exc)
+        except asyncio.CancelledError:
+            log.info("propagate task %s was cancelled", job.job_id)
+
     job.task = asyncio.create_task(runner())
+    job.task.add_done_callback(_log_task_exception)
     return PropagateResponse(
         job_id=job.job_id,
         clip_id=clip_id,

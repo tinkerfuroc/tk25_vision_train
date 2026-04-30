@@ -71,6 +71,11 @@ def main() -> int:
             project=args.project,
             name=args.name,
             verbose=True,
+            # Memory optimization for GPUs with limited VRAM
+            workers=2,           # Reduce dataloader workers (default is 8)
+            cache=False,         # Don't cache images in RAM
+            amp=True,            # Mixed precision (saves VRAM)
+            close_mosaic=10,     # Disable mosaic augmentation for last 10 epochs
         )
         if args.device:
             kwargs["device"] = args.device

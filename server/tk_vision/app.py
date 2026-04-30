@@ -10,6 +10,21 @@ from fastapi.staticfiles import StaticFiles
 
 from contextlib import asynccontextmanager
 
+
+def _configure_logging() -> None:
+    """Configure root logger for the application.
+
+    Without this, loggers like tk_vision.propagate, tk_vision.sam3, etc.
+    inherit the root logger's WARNING level and silently drop INFO/DEBUG.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    # Reduce noise from uvicorn access logs
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 from .api import augment as augment_api
 from .api import clips as clips_api
 from .api import export as export_api
@@ -36,6 +51,7 @@ from .ws import train as train_ws
 
 
 def create_app(settings: Settings | None = None, *, load_sam3: bool = False) -> FastAPI:
+    _configure_logging()
     settings = settings or Settings.load()
     log = logging.getLogger("tk_vision")
     log.info("config: %s", settings.config_path or "<defaults>")

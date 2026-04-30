@@ -21,6 +21,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
 
+import numpy as np
+
+from ..capture.source import Frame
 from ..data.persistence import ProjectStore
 from .polygons import normalize_polygon
 from .train_service import (
@@ -55,10 +58,29 @@ class InferJob:
     cancel: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+@dataclass
+class LiveInferJob:
+    """Real-time inference on live camera feed."""
+    job_id: str
+    weights_path: str
+    conf: float
+    iou: float
+    status: InferStatus = "pending"
+    error: Optional[str] = None
+    frame_count: int = 0
+    progress: asyncio.Queue[dict] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=32)
+    )
+    cancel: asyncio.Event = field(default_factory=asyncio.Event)
+    subscriber: Optional[object] = None
+    task: Optional[asyncio.Task] = None
+
+
 class InferManager:
     def __init__(self, store: ProjectStore) -> None:
         self.store = store
         self.jobs: dict[str, InferJob] = {}
+        self.live_jobs: dict[str, LiveInferJob] = {}
 
     def list_jobs(self, run_id: str | None = None) -> list[InferJob]:
         if run_id is None:
@@ -67,6 +89,9 @@ class InferManager:
 
     def get(self, job_id: str) -> InferJob | None:
         return self.jobs.get(job_id)
+
+    def get_live(self, job_id: str) -> LiveInferJob | None:
+        return self.live_jobs.get(job_id)
 
     def start(
         self,
@@ -98,8 +123,39 @@ class InferManager:
         asyncio.create_task(self._run(job))
         return job
 
+    def start_live(
+        self,
+        *,
+        weights_path: Path,
+        conf: float = 0.25,
+        iou: float = 0.5,
+        live_camera: object,
+    ) -> LiveInferJob:
+        """Start real-time inference on live camera."""
+        if not weights_path.exists():
+            raise FileNotFoundError(f"weights not found: {weights_path}")
+
+        job = LiveInferJob(
+            job_id=uuid.uuid4().hex[:12],
+            weights_path=str(weights_path),
+            conf=conf,
+            iou=iou,
+        )
+        self.live_jobs[job.job_id] = job
+        log.info("start_live: created job %s with weights %s", job.job_id, weights_path)
+        job.task = asyncio.create_task(self._run_live(job, live_camera))
+        return job
+
     def cancel(self, job_id: str) -> InferJob:
         job = self.jobs.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job.status in ACTIVE_STATUSES:
+            job.cancel.set()
+        return job
+
+    def cancel_live(self, job_id: str) -> LiveInferJob:
+        job = self.live_jobs.get(job_id)
         if job is None:
             raise KeyError(job_id)
         if job.status in ACTIVE_STATUSES:
@@ -209,6 +265,95 @@ class InferManager:
         )
         job.predictions_path = str(out_path)
 
+    async def _run_live(self, job: LiveInferJob, live_camera) -> None:
+        """Run real-time inference on live camera frames."""
+        from ultralytics import YOLO
+
+        try:
+            job.status = "running"
+            await _put_with_drop(job.progress, {"event": "started"})
+
+            # Load model
+            loop = asyncio.get_running_loop()
+            model = await loop.run_in_executor(None, YOLO, job.weights_path)
+            names: dict[int, str] = getattr(model, "names", {}) or {}
+
+            # Subscribe to live camera
+            sub = await live_camera.attach(lossless=False, name=f"live-infer-{job.job_id}")
+            job.subscriber = sub
+
+            while not job.cancel.is_set():
+                try:
+                    frame: Frame = await asyncio.wait_for(sub.queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
+
+                # Run inference
+                img = frame.image_bgr
+                h, w = img.shape[:2]
+
+                results = await loop.run_in_executor(
+                    None,
+                    lambda: model.predict(source=img, conf=job.conf, iou=job.iou, verbose=False)
+                )
+
+                detections: list[dict] = []
+                r = results[0] if results else None
+                if r is not None and r.masks is not None and r.boxes is not None:
+                    cls = r.boxes.cls.tolist() if r.boxes.cls is not None else []
+                    confs = r.boxes.conf.tolist() if r.boxes.conf is not None else []
+                    xyxy = r.boxes.xyxy.tolist() if r.boxes.xyxy is not None else []
+                    xy_polys = r.masks.xy
+                    for c, sc, bb, poly in zip(cls, confs, xyxy, xy_polys):
+                        poly_flat = [float(v) for pt in poly for v in pt]
+                        poly_norm = normalize_polygon(poly_flat, w, h)
+                        bbox_norm = [bb[0] / w, bb[1] / h, bb[2] / w, bb[3] / h]
+                        cid = int(c)
+                        detections.append({
+                            "class_id": cid,
+                            "label": names.get(cid, f"class_{cid}"),
+                            "score": float(sc),
+                            "polygon_norm": poly_norm,
+                            "bbox_norm": bbox_norm,
+                        })
+
+                # Encode frame as JPEG base64 for display
+                import base64
+                import cv2
+                _, jpeg_buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                frame_b64 = base64.b64encode(jpeg_buf.tobytes()).decode('ascii')
+
+                job.frame_count += 1
+                await _put_with_drop(job.progress, {
+                    "event": "frame",
+                    "frame_idx": frame.index,
+                    "timestamp": frame.timestamp_s,
+                    "detections": detections,
+                    "width": w,
+                    "height": h,
+                    "frame_b64": frame_b64,
+                })
+
+            # Cleanup
+            if job.subscriber:
+                await live_camera.detach(job.subscriber)
+
+            job.status = "cancelled" if job.cancel.is_set() else "done"
+            await _put_with_drop(job.progress, {"event": job.status})
+
+        except Exception as e:
+            log.exception("live infer error: %s", e)
+            job.status = "error"
+            job.error = str(e)
+            await _put_with_drop(job.progress, {"event": "error", "detail": str(e)})
+            if job.subscriber:
+                try:
+                    await live_camera.detach(job.subscriber)
+                except Exception:
+                    pass
+
 
 def load_predictions(store: ProjectStore, run_id: str, clip_id: str) -> dict | None:
     p = store.runs_dir / run_id / "inference" / f"{clip_id}.json"
@@ -221,6 +366,7 @@ __all__ = [
     "InferJob",
     "InferManager",
     "InferStatus",
+    "LiveInferJob",
     "TERMINAL_STATUSES",
     "load_predictions",
 ]

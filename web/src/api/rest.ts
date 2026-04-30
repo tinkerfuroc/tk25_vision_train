@@ -51,10 +51,40 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await r.json()) as T;
 }
 
+export type LiveInferStatus = {
+  job_id: string;
+  status: JobStatus;
+  error: string | null;
+  frame_count: number;
+};
+
+export type LiveFrameEvent = {
+  event: string;
+  frame_idx: number;
+  timestamp: number;
+  detections: InferDetection[];
+  width: number;
+  height: number;
+  frame_b64?: string;  // base64-encoded JPEG for display
+};
+
 export const api = {
   health: () => request<Health>("/api/healthz"),
   ontology: () => request<Ontology>("/api/ontology"),
   clips: () => request<ClipSummary[]>("/api/clips"),
+  runs: () => request<RunSummary[]>("/api/runs"),
+  getRun: (run_id: string) => request<RunSummary>(`/api/runs/${encodeURIComponent(run_id)}`),
+  models: () => request<ModelInfo[]>("/api/runs/models"),
+  startLiveInfer: (body: { weights_path: string; conf?: number; iou?: number }) =>
+    request<LiveInferStatus>("/api/live-infer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }),
+  getLiveInfer: (job_id: string) =>
+    request<LiveInferStatus>(`/api/live-infer/${encodeURIComponent(job_id)}`),
+  cancelLiveInfer: (job_id: string) =>
+    request<LiveInferStatus>(`/api/live-infer/${encodeURIComponent(job_id)}`, { method: "DELETE" }),
   deleteClip: (id: string) => request<{ deleted: string }>(`/api/clips/${id}`, { method: "DELETE" }),
   importFolder: (folder_path: string) =>
     request<ClipSummary>("/api/clips/import", {
@@ -187,6 +217,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     }),
+  listTrainJobs: (run_id: string) =>
+    request<TrainStatus[]>(`/api/runs/${encodeURIComponent(run_id)}/train`),
   getTrain: (run_id: string, job_id: string) =>
     request<TrainStatus>(`/api/runs/${encodeURIComponent(run_id)}/train/${encodeURIComponent(job_id)}`),
   cancelTrain: (run_id: string, job_id: string) =>
@@ -200,6 +232,18 @@ export const api = {
   ) =>
     request<InferStatus>(
       `/api/runs/${encodeURIComponent(run_id)}/infer/${encodeURIComponent(clip_id)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      }
+    ),
+  startInferNoRun: (
+    clip_id: string,
+    body: { weights_path: string; conf?: number; iou?: number }
+  ) =>
+    request<InferStatus>(
+      `/api/infer/${encodeURIComponent(clip_id)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -227,6 +271,19 @@ export const api = {
     const tail = qs.toString() ? `?${qs}` : "";
     return request<InferPredictions>(
       `/api/runs/${encodeURIComponent(run_id)}/predictions/${encodeURIComponent(clip_id)}${tail}`
+    );
+  },
+  getPredictionsNoRun: (
+    clip_id: string,
+    opts?: { frame?: number; from_idx?: number; to_idx?: number }
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts?.frame !== undefined) qs.set("frame", String(opts.frame));
+    if (opts?.from_idx !== undefined) qs.set("from_idx", String(opts.from_idx));
+    if (opts?.to_idx !== undefined) qs.set("to_idx", String(opts.to_idx));
+    const tail = qs.toString() ? `?${qs}` : "";
+    return request<InferPredictions>(
+      `/api/predictions/${encodeURIComponent(clip_id)}${tail}`
     );
   }
 };
@@ -274,6 +331,14 @@ export type InferPredictions = {
 
 export function inferWebSocket(runId: string, clipId: string, jobId: string): WebSocket {
   return wsUrl(`/ws/infer/${runId}/${clipId}/${jobId}`);
+}
+
+export function inferWebSocketNoRun(clipId: string, jobId: string): WebSocket {
+  return wsUrl(`/ws/infer/${clipId}/${jobId}`);
+}
+
+export function liveInferWebSocket(jobId: string): WebSocket {
+  return wsUrl(`/ws/infer/live/${jobId}`);
 }
 
 export type JobStatus = "pending" | "running" | "done" | "error" | "cancelled";
@@ -380,6 +445,27 @@ export type ClipDetail = {
   frame_count: number;
   deleted_frames: number[];
   tracks: TrackOut[];
+};
+
+export type RunSummary = {
+  run_id: string;
+  run_dir: string;
+  has_data: boolean;
+  has_model: boolean;
+  has_augment: boolean;
+  train_frames: number;
+  val_frames: number;
+  classes: string[];
+  metrics: Record<string, unknown> | null;
+  weights_path: string | null;  // Path to best.pt if trained
+};
+
+export type ModelInfo = {
+  name: string;
+  path: string;
+  run_id: string | null;
+  metrics: Record<string, unknown> | null;
+  created_at: number | null;
 };
 
 export function labelWebSocket(clipId: string): WebSocket {
