@@ -38,6 +38,8 @@ export function TestPage() {
     status: JobStatus;
     done: number;
     total: number;
+    currentFrameIdx?: number;
+    currentDetections?: InferDetection[];
   } | null>(null);
   const [inferError, setInferError] = useState<string | null>(null);
   const inferWsRef = useRef<WebSocket | null>(null);
@@ -75,11 +77,11 @@ export function TestPage() {
     enabled: !!selectedClipId && mode === "clip",
   });
 
-  // Fetch predictions - use runId if available, otherwise use temp_infer
-  const effectiveRunId = runId || "temp_infer";
+  // Fetch predictions - use runId if available and valid, otherwise use temp_infer
+  const hasValidRunId = runId && runId !== "none" && runId !== "undefined";
   const predictions = useQuery({
-    queryKey: ["predictions", effectiveRunId, selectedClipId],
-    queryFn: () => runId
+    queryKey: ["predictions", hasValidRunId ? runId : "temp_infer", selectedClipId],
+    queryFn: () => hasValidRunId
       ? api.getPredictions(runId, selectedClipId)
       : api.getPredictionsNoRun(selectedClipId),
     retry: false,
@@ -108,9 +110,13 @@ export function TestPage() {
       if (!selectedClipId || !weightsPath) throw new Error("clip and weights required");
       console.log("Starting inference:", { runId, selectedClipId, weightsPath, conf, iou });
       setInferError(null);
-      if (runId) {
+      // Only use startInfer if runId is a non-empty, non-"none" string
+      const hasValidRunId = runId && runId !== "none" && runId !== "undefined";
+      if (hasValidRunId) {
+        console.log("Using startInfer with runId:", runId);
         return api.startInfer(runId, selectedClipId, { weights_path: weightsPath, conf, iou });
       } else {
+        console.log("Using startInferNoRun (no valid runId)");
         return api.startInferNoRun(selectedClipId, { weights_path: weightsPath, conf, iou });
       }
     },
@@ -119,17 +125,25 @@ export function TestPage() {
       setInferError(null);
       setJob({ job_id: res.job_id, status: res.status, done: 0, total: res.total_frames });
       inferWsRef.current?.close();
-      const wsUrl = runId
+      const hasValidRunId = runId && runId !== "none" && runId !== "undefined";
+      const wsUrl = hasValidRunId
         ? `/ws/infer/${runId}/${selectedClipId}/${res.job_id}`
         : `/ws/infer/${selectedClipId}/${res.job_id}`;
       console.log("WebSocket URL:", wsUrl);
-      const ws = runId
+      const ws = hasValidRunId
         ? inferWebSocket(runId, selectedClipId, res.job_id)
         : inferWebSocketNoRun(selectedClipId, res.job_id);
       inferWsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("WebSocket connected");
+      };
+      ws.onclose = (ev) => {
+        console.log("WebSocket closed:", ev.code, ev.reason);
+      };
       ws.onmessage = (ev) => {
         console.log("WS message:", ev.data);
-        let msg: { event?: string; done?: number; total?: number; detail?: string };
+        let msg: { event?: string; done?: number; total?: number; detail?: string; frame_idx?: number; detections?: InferDetection[] };
         try {
           msg = JSON.parse(ev.data);
         } catch {
@@ -144,7 +158,17 @@ export function TestPage() {
         setJob((cur) => {
           if (!cur || cur.job_id !== res.job_id) return cur;
           if (msg.event === "frame") {
-            return { ...cur, done: msg.done ?? cur.done, total: msg.total ?? cur.total };
+            // Auto-advance frame display to follow inference
+            if (msg.frame_idx !== undefined) {
+              setFrameIdx(msg.frame_idx);
+            }
+            return {
+              ...cur,
+              done: msg.done ?? cur.done,
+              total: msg.total ?? cur.total,
+              currentFrameIdx: msg.frame_idx,
+              currentDetections: msg.detections,
+            };
           }
           if (msg.event && TERMINAL_JOB_STATUSES.has(msg.event as JobStatus)) {
             if (msg.event === "done") predictions.refetch();
@@ -167,10 +191,10 @@ export function TestPage() {
   const cancelMut = useMutation({
     mutationFn: () => {
       if (!job) throw new Error("no active job");
-      if (runId) {
+      const validRunId = runId && runId !== "none" && runId !== "undefined";
+      if (validRunId) {
         return api.cancelInfer(runId, selectedClipId, job.job_id);
       } else {
-        // For temp_infer, use the run_id from the job response
         return api.cancelInfer("temp_infer", selectedClipId, job.job_id);
       }
     },
@@ -218,15 +242,19 @@ export function TestPage() {
     },
   });
 
-  // Detections for current frame
+  // Detections for current frame - use real-time detections during active inference
   const dets: InferDetection[] = useMemo(() => {
     if (mode === "live" && liveFrame) {
       return liveFrame.detections;
     }
+    // During active clip inference, show real-time detections for current frame
+    if (mode === "clip" && job?.status === "running" && job.currentDetections && job.currentFrameIdx === frameIdx) {
+      return job.currentDetections;
+    }
     const data = predictions.data;
     if (!data) return [];
     return data.predictions[String(frameIdx)] ?? [];
-  }, [predictions.data, frameIdx, mode, liveFrame]);
+  }, [predictions.data, frameIdx, mode, liveFrame, job]);
 
   const totalClasses = ontology.data?.labels.length ?? 1;
   const c = clipDetail.data;
@@ -385,8 +413,19 @@ export function TestPage() {
         </div>
       ) : null}
       {job ? (
-        <div className={`rounded p-2 text-xs ${job.status === "error" ? "bg-rose-950 border border-rose-800 text-rose-200" : "bg-slate-900 border border-slate-800 text-slate-300"}`}>
-          clip infer {job.job_id} — {job.status} — {job.done}/{job.total}
+        <div className={`rounded p-3 text-xs ${job.status === "error" ? "bg-rose-950 border border-rose-800 text-rose-200" : "bg-slate-900 border border-slate-800 text-slate-300"}`}>
+          <div className="flex items-center justify-between mb-2">
+            <span>clip infer {job.job_id} — <span className={job.status === "running" ? "text-cyan-400" : job.status === "done" ? "text-emerald-400" : ""}>{job.status}</span></span>
+            <span>{job.done}/{job.total} frames</span>
+          </div>
+          {job.total > 0 ? (
+            <div className="h-2 w-full bg-slate-800 rounded overflow-hidden">
+              <div
+                className="h-full bg-cyan-500 transition-all duration-150"
+                style={{ width: `${(job.done / job.total) * 100}%` }}
+              />
+            </div>
+          ) : null}
         </div>
       ) : null}
 

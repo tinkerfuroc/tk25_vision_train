@@ -111,6 +111,14 @@ class InferManager:
         if not run_dir.exists():
             raise FileNotFoundError(f"run not found: {run_id}")
 
+        # Count frames upfront for initial progress display
+        clip = self.store.read_clip(clip_id)
+        deleted = set(clip.deleted_frames)
+        frames_dir = self.store.frames_dir(clip_id)
+        all_frames = sorted(frames_dir.glob("*.jpg"))
+        targets = [p for p in all_frames if int(p.stem) not in deleted]
+        total_frames = len(targets)
+
         job = InferJob(
             job_id=uuid.uuid4().hex[:12],
             run_id=run_id,
@@ -118,6 +126,7 @@ class InferManager:
             weights_path=str(weights_path),
             conf=conf,
             iou=iou,
+            total_frames=total_frames,
         )
         self.jobs[job.job_id] = job
         asyncio.create_task(self._run(job))

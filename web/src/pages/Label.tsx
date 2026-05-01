@@ -487,7 +487,7 @@ export function LabelPage() {
             </Link>
           ) : models.data?.length ? (
             <Link
-              to={`/test/${lastRunId || "none"}/${clipId}`}
+              to={`/test?weights=${encodeURIComponent(models.data[0].path)}`}
               className="rounded bg-teal-700 hover:bg-teal-600 px-3 py-1.5 text-sm"
               title="Run inference with any trained model (no export needed for this clip)."
             >
